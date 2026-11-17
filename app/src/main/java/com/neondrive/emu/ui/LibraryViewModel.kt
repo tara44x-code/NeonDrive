@@ -49,21 +49,34 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         app.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         settings.romFolders = settings.romFolders + uri.toString()
-        scan(listOf(uri))
+        scan(listOf(uri), quiet = false)
     }
 
-    fun rescanAll() = scan(settings.romFolders.map(Uri::parse))
+    /** Manual refresh: also re-identifies games that weren't recognized before. */
+    fun rescanAll() = scan(settings.romFolders.map(Uri::parse), quiet = false)
 
-    private fun scan(folders: List<Uri>) {
-        if (scanning != null || folders.isEmpty()) return
+    /** Runs silently whenever the app comes to the foreground: picks up new / deleted games. */
+    fun autoScan() = scan(settings.romFolders.map(Uri::parse), quiet = true)
+
+    private var busy = false
+
+    private fun scan(folders: List<Uri>, quiet: Boolean = false) {
+        if (busy || folders.isEmpty()) return
+        busy = true
         viewModelScope.launch {
-            scanning = "…"
+            if (!quiet) scanning = "…"
+            val before = withContext(Dispatchers.IO) { repo.load().map { it.uri }.toSet() }
             try {
-                folders.forEach { f -> games = repo.scan(f) { name -> scanning = name } }
+                folders.forEach { f ->
+                    games = repo.scan(f, reidentify = !quiet) { name -> scanning = name }
+                }
+                val added = games.count { it.uri !in before }
+                if (quiet && added > 0) error = "تمت إضافة $added لعبة جديدة 🎮"
             } catch (e: Exception) {
-                error = "تعذر فحص المجلد: ${e.message}"
+                if (!quiet) error = "تعذر فحص المجلد: ${e.message}"
             } finally {
                 scanning = null
+                busy = false
             }
         }
     }

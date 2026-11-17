@@ -132,10 +132,7 @@ class GameActivity : ComponentActivity() {
         lifecycle.addObserver(retroView)
 
         lifecycleScope.launch {
-            retroView.getGLRetroErrors().collect { code ->
-                Toast.makeText(this@GameActivity, "خطأ بالمحرك ($code) — تأكد من سلامة ملف اللعبة", Toast.LENGTH_LONG).show()
-                finish()
-            }
+            retroView.getGLRetroErrors().collect { code -> onEngineError(code) }
         }
         lifecycleScope.launch {
             retroView.getGLRetroEvents().first { it == GLRetroView.GLRetroEvents.FrameRendered }
@@ -194,8 +191,40 @@ class GameActivity : ComponentActivity() {
 
     // ---------- Core lifecycle ----------
 
+    /** Only loading/GL failures are fatal. Cheat or save-state errors must never close the game. */
+    private fun onEngineError(code: Int) {
+        when (code) {
+            GLRetroView.ERROR_LOAD_LIBRARY, GLRetroView.ERROR_LOAD_GAME, GLRetroView.ERROR_GL_NOT_COMPATIBLE -> {
+                Toast.makeText(this, "تعذر تشغيل اللعبة ($code) — تأكد من سلامة ملف اللعبة", Toast.LENGTH_LONG).show()
+                finish()
+            }
+            GLRetroView.ERROR_CHEAT -> message = "أحد أكواد الجيتات غير صالح لهاي النسخة من اللعبة"
+            GLRetroView.ERROR_SERIALIZATION -> {
+                stateFile(this, game, AUTO_SLOT).delete()
+                message = "تعذر تحميل الحفظ"
+            }
+            else -> message = "تنبيه من المحرك ($code)"
+        }
+    }
+
+    // ---- Crash guard: if the app dies right after resuming a state or applying cheats,
+    // the next launch skips that step instead of crashing again.
+    private val guardFile by lazy { File(filesDir, "guard_${game.crc}") }
+
+    private fun recoverFromLastCrash() {
+        if (!guardFile.exists()) return
+        val pending = guardFile.readText()
+        if ("cheats" in pending) {
+            cheats.save(game, cheats.load(game).map { it.copy(enabled = false) })
+            message = "عطّلنا الجيتات لأنها سببت إغلاق اللعبة المرة السابقة"
+        }
+        if ("resume" in pending) stateFile(this, game, AUTO_SLOT).delete()
+        guardFile.delete()
+    }
+
     private fun onCoreReady() {
         coreReady = true
+        recoverFromLastCrash()
         lifecycleScope.launch(Dispatchers.Default) {
             if (game.system == GameSystem.GENESIS && settings.sixButtonPad) {
                 runCatching {
@@ -203,13 +232,18 @@ class GameActivity : ComponentActivity() {
                     options.firstOrNull { it.description?.contains("6") == true }?.let { retroView.setControllerType(0, it.id) }
                 }
             }
-            applyCheats()
-            if (settings.autoResume) {
-                val auto = stateFile(this@GameActivity, game, AUTO_SLOT)
-                if (auto.exists() && runCatching { retroView.unserializeState(auto.readBytes()) }.getOrDefault(false)) {
-                    message = "تم الاستئناف من آخر نقطة لعبت بيها"
-                }
+            val auto = stateFile(this@GameActivity, game, AUTO_SLOT)
+            val willResume = settings.autoResume && auto.exists()
+            val hasCheats = cheats.load(game).any { it.enabled }
+            if (willResume || hasCheats) {
+                guardFile.writeText(listOfNotNull("resume".takeIf { willResume }, "cheats".takeIf { hasCheats }).joinToString(","))
             }
+            if (willResume && runCatching { retroView.unserializeState(auto.readBytes()) }.getOrDefault(false)) {
+                message = "تم الاستئناف من آخر نقطة لعبت بيها"
+            }
+            applyCheats()
+            delay(5_000)          // survived 5 s -> it's safe
+            guardFile.delete()
         }
         // Periodic SRAM autosave + rewind capture, only while the game is visible.
         lifecycleScope.launch {
@@ -221,7 +255,7 @@ class GameActivity : ComponentActivity() {
                         delay(step)
                         if (rewindEnabled && !rewinding) captureRewind()
                         sinceSram += step
-                        if (sinceSram >= 30_000) { sinceSram = 0; saveSram() }
+                        if (sinceSram >= 30_000) { sinceSram = 0; saveSram(); saveAutoState() }
                     }
                 }
             }
@@ -271,19 +305,24 @@ class GameActivity : ComponentActivity() {
 
     private suspend fun applyCheats() = withContext(Dispatchers.Default) {
         cheats.load(game).forEachIndexed { i, c ->
-            runCatching { retroView.setCheat(i, c.enabled, c.code) }
+            val code = c.code.uppercase().replace(" ", "")
+            runCatching { retroView.setCheat(i, c.enabled, code) }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing && ::game.isInitialized) guardFile.delete() // normal exit, not a crash
     }
 
     override fun onPause() {
         super.onPause()
         saveSram()
-        saveAutoState()
     }
 
     /** Snapshot used by "auto resume" next time the game is opened. */
     private fun saveAutoState() {
-        if (!coreReady || !settings.autoResume) return
+        if (!coreReady || !settings.autoResume || guardFile.exists()) return
         runCatching {
             val bytes = retroView.serializeState()
             if (bytes.isNotEmpty()) stateFile(this, game, AUTO_SLOT).writeBytes(bytes)
@@ -301,7 +340,11 @@ class GameActivity : ComponentActivity() {
             retroView.shader = profile.shaderFor(settings.filter)
         }
         if (data.getBooleanExtra(GameMenuActivity.RES_CHEATS_CHANGED, false)) {
-            lifecycleScope.launch { applyCheats(); message = "تم تحديث الجيتات" }
+            lifecycleScope.launch {
+                guardFile.writeText("cheats")
+                applyCheats(); message = "تم تحديث الجيتات"
+                delay(5_000); guardFile.delete()
+            }
         }
         val slot = data.getIntExtra(GameMenuActivity.RES_SLOT, 0)
         when (data.getStringExtra(GameMenuActivity.RES_ACTION)) {
@@ -320,7 +363,10 @@ class GameActivity : ComponentActivity() {
                 stateFile(this@GameActivity, game, AUTO_SLOT).delete()
             }
             GameMenuActivity.ACTION_TOUCH -> showTouchAnyway = !showTouchAnyway
-            GameMenuActivity.ACTION_QUIT -> finish() // onPause saves SRAM + auto state
+            GameMenuActivity.ACTION_QUIT -> lifecycleScope.launch(Dispatchers.Default) {
+                saveAutoState(); saveSram()
+                withContext(Dispatchers.Main) { finish() }
+            }
         }
     }
 

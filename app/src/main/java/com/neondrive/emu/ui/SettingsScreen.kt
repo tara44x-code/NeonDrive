@@ -69,12 +69,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
         }
 
         Section("حول") {
-            Text(
-                "تطوير: مهند سات لنك\n" +
-                "NeonDrive مجاني ومفتوح المصدر (GPLv3).\nالمحرك: Genesis Plus GX عبر LibretroDroid.\n" +
-                    "الأسماء والأغلفة والجيتات من قاعدة بيانات libretro.\nالتطبيق لا يحتوي على أي ألعاب.",
-                color = Neon.TextDim, fontSize = 12.sp,
-            )
+            Text("تطوير: مهند سات لنك", color = Neon.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

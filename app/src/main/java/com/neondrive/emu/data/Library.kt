@@ -67,7 +67,7 @@ class LibraryRepository(private val context: Context) {
     }
 
     /** Recursively scans a SAF folder. Already-known files are reused, so rescans are fast. */
-    suspend fun scan(treeUri: Uri, onProgress: (String) -> Unit): List<Game> = withContext(Dispatchers.IO) {
+    suspend fun scan(treeUri: Uri, reidentify: Boolean = true, onProgress: (String) -> Unit): List<Game> = withContext(Dispatchers.IO) {
         val known = load().associateBy { it.uri }
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext known.values.toList()
         val found = mutableListOf<Game>()
@@ -81,7 +81,7 @@ class LibraryRepository(private val context: Context) {
                 if (ext !in GameSystem.allExtensions && ext !in GameSystem.archiveExtensions) continue
                 val uri = f.uri.toString()
                 val cached = known[uri]
-                if (cached != null && (cached.dbName != null)) { found += cached; continue }
+                if (cached != null && (cached.dbName != null || !reidentify)) { found += cached; continue }
                 onProgress(name)
                 runCatching { identify(f.uri, name, ext) }.getOrNull()?.let {
                     found += it.copy(lastPlayed = cached?.lastPlayed ?: 0L)
