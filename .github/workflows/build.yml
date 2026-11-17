@@ -53,8 +53,20 @@ jobs:
           name: NeonDrive-apk
           path: app/build/outputs/apk/release/*.apk
 
-      - name: Publish GitHub Release (on tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Name the APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk "dist/NeonDrive-v0.4.${{ github.run_number }}.apk"
+
+      - name: Publish GitHub Release (every push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/release/*.apk
+          tag_name: v0.4.${{ github.run_number }}
+          name: NeonDrive v0.4.${{ github.run_number }}
+          make_latest: true
+          body: |
+            تطوير: مهند سات لنك
+            نزّل ملف الـ APK من الأسفل ونصّبه.
+            Signed with the release key: ${{ env.HAS_SIGNING_KEY }}
+          files: dist/*.apk
