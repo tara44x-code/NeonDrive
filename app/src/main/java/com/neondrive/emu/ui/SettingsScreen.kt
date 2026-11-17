@@ -13,14 +13,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.neondrive.emu.data.VideoFilter
+import com.neondrive.emu.data.AspectMode
+import com.neondrive.emu.data.TouchMode
+import com.neondrive.emu.game.ControllerSetupActivity
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
     val s = vm.settings
     var filter by remember { mutableStateOf(s.filter) }
-    var wide by remember { mutableStateOf(s.widescreen) }
+    var aspect by remember { mutableStateOf(s.aspect) }
+    var touchMode by remember { mutableStateOf(s.touchMode) }
+    val context = LocalContext.current
     var six by remember { mutableStateOf(s.sixButtonPad) }
-    var rewind by remember { mutableStateOf(s.rewind ?: (vm.profile?.rewindByDefault ?: true)) }
+    var rewind by remember { mutableStateOf(s.rewind ?: false) }
     var haptics by remember { mutableStateOf(s.haptics) }
     var autoResume by remember { mutableStateOf(s.autoResume) }
     var opacity by remember { mutableFloatStateOf(s.controlsOpacity) }
@@ -47,10 +54,27 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
                     NeonChip(f.label, filter == f) { filter = f; s.filter = f }
                 }
             }
-            Toggle("شاشة عريضة 16:9 (تجريبي)", "يوسّع مجال الرؤية بألعاب Mega Drive", wide) { wide = it; s.widescreen = it }
+            Spacer(Modifier.height(8.dp))
+            Text("نسبة العرض", color = Neon.Text, fontSize = 14.sp)
+            Text(
+                "أصلي = نفس الجهاز الأصلي • عريض حقيقي = يكشف جزء أكبر من المرحلة (Mega Drive) • تمدد/ملء الشاشة = تكبير الصورة على قياس موبايلك",
+                color = Neon.TextDim, fontSize = 11.sp,
+            )
+            FlowRowCompat {
+                AspectMode.entries.forEach { a -> NeonChip(a.label, aspect == a) { aspect = a; s.aspect = a } }
+            }
         }
 
         Section("التحكم") {
+            Text("أزرار اللمس", color = Neon.Text, fontSize = 14.sp)
+            FlowRowCompat {
+                TouchMode.entries.forEach { m -> NeonChip(m.label, touchMode == m) { touchMode = m; s.touchMode = m } }
+            }
+            Button(
+                onClick = { context.startActivity(Intent(context, ControllerSetupActivity::class.java)) },
+                colors = ButtonDefaults.buttonColors(containerColor = Neon.Cyan),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("إعداد الجويستك وربط الأزرار", color = Neon.Bg, fontWeight = FontWeight.Bold) }
             Toggle("يد 6 أزرار", "A B C + X Y Z لألعاب القتال", six) { six = it; s.sixButtonPad = it }
             Toggle("الاهتزاز عند اللمس", null, haptics) { haptics = it; s.haptics = it }
             Text("شفافية الأزرار ${(opacity * 100).toInt()}%", color = Neon.Text, fontSize = 14.sp)
@@ -63,7 +87,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             Toggle("استئناف تلقائي", "ترجع للعبة من نفس المكان اللي طلعت منه", autoResume) {
                 autoResume = it; s.autoResume = it
             }
-            Toggle("الرجوع بالزمن (Rewind)", "يستهلك ذاكرة إضافية؛ مطفأ تلقائياً بالأجهزة الضعيفة", rewind) {
+            Toggle("الرجوع بالزمن (Rewind)", "تجريبي، يستهلك ذاكرة إضافية", rewind) {
                 rewind = it; s.rewind = it
             }
         }

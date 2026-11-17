@@ -12,8 +12,8 @@ android {
         applicationId = "com.neondrive.emu"
         minSdk = 24          // Android 7.0
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-alpha"
+        versionCode = 2
+        versionName = "0.2.0-alpha"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -53,7 +53,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 }
 
 dependencies {

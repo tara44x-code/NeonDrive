@@ -39,6 +39,7 @@ import com.neondrive.emu.data.CheatRepository
 import com.neondrive.emu.data.Game
 import com.neondrive.emu.data.Settings
 import com.neondrive.emu.data.VideoFilter
+import com.neondrive.emu.data.AspectMode
 import com.neondrive.emu.ui.Neon
 import com.neondrive.emu.ui.NeonChip
 import com.neondrive.emu.ui.NeonPanel
@@ -57,6 +58,7 @@ class GameMenuActivity : ComponentActivity() {
         const val RES_SLOT = "slot"
         const val RES_CHEATS_CHANGED = "cheats"
         const val RES_FILTER_CHANGED = "filter"
+        const val RES_ASPECT_CHANGED = "aspect"
         const val ACTION_SAVE = "save"
         const val ACTION_LOAD = "load"
         const val ACTION_RESET = "reset"
@@ -73,6 +75,7 @@ class GameMenuActivity : ComponentActivity() {
     private lateinit var settings: Settings
     private var cheatsChanged = false
     private var filterChanged = false
+    private var aspectChanged = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,6 +108,7 @@ class GameMenuActivity : ComponentActivity() {
             putExtra(RES_SLOT, slot)
             putExtra(RES_CHEATS_CHANGED, cheatsChanged)
             putExtra(RES_FILTER_CHANGED, filterChanged)
+            putExtra(RES_ASPECT_CHANGED, aspectChanged)
         })
     }
 
@@ -115,6 +119,7 @@ class GameMenuActivity : ComponentActivity() {
     @Composable
     private fun MainPage(onCheats: () -> Unit) {
         var filter by remember { mutableStateOf(settings.filter) }
+        var aspect by remember { mutableStateOf(settings.aspect) }
         val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
 
         Column(
@@ -145,6 +150,15 @@ class GameMenuActivity : ComponentActivity() {
                             { finishWith(ACTION_LOAD, slot) }, enabled = f.exists(),
                             colors = ButtonDefaults.buttonColors(containerColor = Neon.Magenta),
                         ) { Text("تحميل", color = Neon.Bg) }
+                    }
+                }
+            }
+
+            Text("نسبة العرض", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AspectMode.entries.forEach { a ->
+                    NeonChip(a.label, a == aspect) {
+                        aspect = a; settings.aspect = a; aspectChanged = true; setResultFor(null)
                     }
                 }
             }
