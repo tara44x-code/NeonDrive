@@ -270,6 +270,21 @@ class GameMenuActivity : ComponentActivity() {
                     color = if (usedParts > CheatRepository.MAX_PARTS * 0.8) Neon.Magenta else Neon.Cyan, fontSize = 11.sp,
                 )
             }
+            if (cheats.any { it.enabled }) {
+                OutlinedButton(
+                    onClick = {
+                        update(cheats.map { it.copy(enabled = false) })
+                        status = "تم إطفاء كل الجيتات"
+                    },
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Neon.Magenta),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) {
+                    Icon(Icons.Default.Block, null, tint = Neon.Magenta, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("إطفاء كل الجيتات", color = Neon.Magenta, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
             if (cheats.size > 8) {
                 OutlinedTextField(
                     filterText, { filterText = it }, Modifier.fillMaxWidth().heightIn(min = 44.dp), singleLine = true,

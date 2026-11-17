@@ -12,8 +12,10 @@ android {
         applicationId = "com.neondrive.emu"
         minSdk = 24          // Android 7.0
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0-alpha"
+        // Every GitHub build gets a higher number, so updates install over the old version.
+        val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+        versionCode = 100 + run
+        versionName = "0.4.$run"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

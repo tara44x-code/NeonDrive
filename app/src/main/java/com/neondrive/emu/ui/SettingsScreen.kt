@@ -114,7 +114,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
         }
 
         Section("المحاكاة") {
-            Toggle("استئناف تلقائي", "ترجع للعبة من نفس المكان اللي طلعت منه", autoResume) {
+            Toggle("سؤال المتابعة عند فتح اللعبة", "يخيّرك: متابعة من آخر نقطة أو بدء من جديد", autoResume) {
                 autoResume = it; s.autoResume = it
             }
             Toggle("الرجوع بالزمن (Rewind)", "زر ⏪ يرجعك ثواني لورا (قبل الموت مثلاً)", rewind) {

@@ -76,11 +76,15 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         const val CORE_WIDE = "libgenesis_plus_gx_wide_libretro_android.so"
         const val AUTO_SLOT = 0
 
-        fun start(context: Context, game: Game, rom: File) {
+        private const val EXTRA_RESUME = "resume"
+
+        /** [resume]: continue from the last exit point (true) or start the game fresh (false). */
+        fun start(context: Context, game: Game, rom: File, resume: Boolean = false) {
             context.startActivity(
                 Intent(context, GameActivity::class.java)
                     .putExtra(EXTRA_GAME, game.toJson().toString())
                     .putExtra(EXTRA_ROM, rom.absolutePath)
+                    .putExtra(EXTRA_RESUME, resume)
             )
         }
 
@@ -320,7 +324,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 }
             }
             val auto = stateFile(this@GameActivity, game, AUTO_SLOT, wideCore)
-            val willResume = settings.autoResume && auto.exists() && auto.length() > 0
+            val willResume = intent.getBooleanExtra(EXTRA_RESUME, false) && auto.exists() && auto.length() > 0
             val enabledCheats = cheats.load(game).count { it.enabled }
             if (willResume || enabledCheats > 0) {
                 guardFile.writeText(listOfNotNull("resume".takeIf { willResume }, "cheats".takeIf { enabledCheats > 0 }).joinToString(","))
@@ -402,7 +406,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     /** Snapshot used by "auto resume" next time the game is opened. */
     private fun saveAutoState() {
-        if (!coreReady || !settings.autoResume || guardFile.exists()) return
+        if (!coreReady || guardFile.exists()) return
         runCatching {
             val bytes = retroView.serializeState()
             if (bytes.isNotEmpty()) stateFile(this, game, AUTO_SLOT, wideCore).writeBytes(bytes)
@@ -471,7 +475,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 CrashReporter.crumb("restart for core change")
                 lifecycleScope.launch(safe) {
                     withContext(Dispatchers.Default) { saveSram() }
-                    finish(); start(this@GameActivity, game, File(romPath))
+                    finish(); start(this@GameActivity, game, File(romPath), resume = false)
                 }
                 return
             }

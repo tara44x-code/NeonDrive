@@ -81,7 +81,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun launch(game: Game, onReady: (Game, File) -> Unit) {
+    /** Game waiting for the "continue / start over" choice. */
+    var resumePrompt by mutableStateOf<Pair<Game, Long>?>(null)
+
+    /** Opens a game; if it has a saved resume point, asks first. */
+    fun play(game: Game, onReady: (Game, File, Boolean) -> Unit) {
+        val auto = com.neondrive.emu.game.GameActivity.stateFile(getApplication(), game, com.neondrive.emu.game.GameActivity.AUTO_SLOT)
+        if (settings.autoResume && auto.exists() && auto.length() > 0) resumePrompt = game to auto.lastModified()
+        else launch(game, resume = false, onReady = onReady)
+    }
+
+    fun launch(game: Game, resume: Boolean, onReady: (Game, File, Boolean) -> Unit) {
         if (loadingGame != null) return
         viewModelScope.launch {
             loadingGame = game.title
@@ -89,7 +99,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 val rom = repo.prepareRom(game)
                 withContext(Dispatchers.IO) { repo.markPlayed(game) }
                 games = games.map { if (it.uri == game.uri) it.copy(lastPlayed = System.currentTimeMillis()) else it }
-                onReady(game, rom)
+                onReady(game, rom, resume)
             } catch (e: Exception) {
                 error = "تعذر فتح اللعبة: ${e.message}"
             } finally {

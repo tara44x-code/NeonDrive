@@ -72,6 +72,12 @@ class MainActivity : ComponentActivity() {
                     var showSettings by rememberSaveable { mutableStateOf(false) }
                     BackHandler(enabled = showSettings) { showSettings = false }
                     crashReport?.let { text -> CrashReportDialog(text) { crashReport = null } }
+                    vm.resumePrompt?.let { (game, savedAt) ->
+                        ResumeDialog(game.title, savedAt,
+                            onContinue = { vm.resumePrompt = null; vm.launch(game, true) { g, rom, r -> GameActivity.start(this@MainActivity, g, rom, r) } },
+                            onNew = { vm.resumePrompt = null; vm.launch(game, false) { g, rom, r -> GameActivity.start(this@MainActivity, g, rom, r) } },
+                            onDismiss = { vm.resumePrompt = null })
+                    }
                     if (showSettings) {
                         SettingsScreen(vm, onBack = { showSettings = false })
                     } else {
@@ -79,7 +85,7 @@ class MainActivity : ComponentActivity() {
                             vm = vm,
                             onOpenSettings = { showSettings = true },
                             onPlay = { game ->
-                                vm.launch(game) { g, rom -> GameActivity.start(this@MainActivity, g, rom) }
+                                vm.play(game) { g, rom, resume -> GameActivity.start(this@MainActivity, g, rom, resume) }
                             },
                         )
                     }
@@ -118,6 +124,26 @@ private fun CrashReportDialog(text: String, onDismiss: () -> Unit) {
                 TextButton({ clipboard.setText(AnnotatedString(text)) }) { Text("نسخ", color = Neon.Cyan) }
                 TextButton(onDismiss) { Text("إغلاق", color = Neon.TextDim) }
             }
+        },
+    )
+}
+
+@Composable
+private fun ResumeDialog(title: String, savedAt: Long, onContinue: () -> Unit, onNew: () -> Unit, onDismiss: () -> Unit) {
+    val ago = android.text.format.DateUtils.getRelativeTimeSpanString(savedAt).toString()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Neon.SurfaceHi,
+        title = { Text(title, color = Neon.Cyan, fontWeight = FontWeight.Bold, maxLines = 2) },
+        text = { Text("عندك نقطة محفوظة من آخر مرة لعبت ($ago). شتريد؟", color = Neon.Text, fontSize = 14.sp) },
+        confirmButton = {
+            androidx.compose.material3.Button(
+                onClick = onContinue,
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Neon.Cyan),
+            ) { Text("▶ متابعة من آخر نقطة", color = Neon.Bg, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            androidx.compose.material3.OutlinedButton(onClick = onNew) { Text("↺ بدء من جديد", color = Neon.Magenta) }
         },
     )
 }
