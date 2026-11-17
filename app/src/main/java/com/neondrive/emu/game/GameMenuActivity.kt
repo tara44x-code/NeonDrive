@@ -9,7 +9,11 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.horizontalScroll
@@ -189,6 +193,7 @@ class GameMenuActivity : ComponentActivity() {
         var showSearch by remember { mutableStateOf(false) }
         var query by remember { mutableStateOf(game.headerName?.let { TitleMatch.base(it) } ?: game.fileTitle) }
         var results by remember { mutableStateOf<List<String>>(emptyList()) }
+        var filterText by remember { mutableStateOf("") }
 
         fun update(list: List<Cheat>) {
             cheats = list; repo.save(game, list); cheatsChanged = true; setResultFor(null)
@@ -208,7 +213,7 @@ class GameMenuActivity : ComponentActivity() {
 
         fun showFetched(r: CheatFetch) {
             cheats = r.cheats; cheatsChanged = true; setResultFor(null)
-            status = "لكينا ${r.cheats.size} جيت (بدون إنترنت) من: " + r.files.joinToString("، ")
+            status = "لكينا ${r.cheats.size} جيت من ${r.files.size} ملف"
         }
 
         fun download() {
@@ -244,21 +249,34 @@ class GameMenuActivity : ComponentActivity() {
         LaunchedEffect(Unit) { if (cheats.isEmpty()) download() }
 
 
-        Column(Modifier.padding(18.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع", tint = Neon.Cyan) }
-                Text("الجيتات", style = Neon.glowText.copy(fontSize = 20.sp), modifier = Modifier.weight(1f))
+                Text("الجيتات", style = Neon.glowText.copy(fontSize = 18.sp), modifier = Modifier.weight(1f))
                 IconButton(onClick = ::download, enabled = !loading) { Icon(Icons.Default.CloudDownload, "تحديث", tint = Neon.Cyan) }
                 IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Default.Search, "بحث يدوي", tint = Neon.Cyan) }
                 IconButton(onClick = { showAdd = true }) { Icon(Icons.Default.Add, "إضافة", tint = Neon.Magenta) }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Neon.Magenta, trackColor = Neon.Surface)
-            status?.let { Text(it, color = Neon.TextDim, fontSize = 12.sp) }
+            // One compact line: result + how much of the engine limit is used
             val usedParts = cheats.filter { it.enabled }.sumOf { CheatRepository.parts(it.code) }
-            if (cheats.isNotEmpty()) Text(
-                "مفعّل: ${cheats.count { it.enabled }} جيت • $usedParts/${CheatRepository.MAX_PARTS} كود",
-                color = if (usedParts > CheatRepository.MAX_PARTS * 0.8) Neon.Magenta else Neon.Cyan, fontSize = 12.sp,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    status ?: "${cheats.size} جيت", color = Neon.TextDim, fontSize = 11.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                if (cheats.isNotEmpty()) Text(
+                    "مفعّل ${cheats.count { it.enabled }} • $usedParts/${CheatRepository.MAX_PARTS}",
+                    color = if (usedParts > CheatRepository.MAX_PARTS * 0.8) Neon.Magenta else Neon.Cyan, fontSize = 11.sp,
+                )
+            }
+            if (cheats.size > 8) {
+                OutlinedTextField(
+                    filterText, { filterText = it }, Modifier.fillMaxWidth().heightIn(min = 44.dp), singleLine = true,
+                    placeholder = { Text("فلترة الجيتات… (مثلاً: Lives أو Energy)", fontSize = 12.sp) },
+                    textStyle = LocalTextStyle.current.copy(fontSize = 13.sp),
+                )
+            }
 
             if (showSearch) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -278,19 +296,24 @@ class GameMenuActivity : ComponentActivity() {
                 }
             }
 
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                itemsIndexed(cheats) { i, c ->
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val shown = cheats.withIndex().filter { (_, c) ->
+                    filterText.isBlank() || c.description.contains(filterText, true) || c.code.contains(filterText, true)
+                }
+                items(shown, key = { it.index }) { (i, c) ->
                     Row(
-                        Modifier.fillMaxWidth().clickable { toggle(i, !c.enabled) }
-                            .padding(vertical = 4.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                            .background(if (c.enabled) Neon.Cyan.copy(alpha = 0.10f) else Neon.Bg.copy(alpha = 0f))
+                            .clickable { toggle(i, !c.enabled) }
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(c.description, color = Neon.Text, fontSize = 14.sp)
+                            Text(c.description, color = if (c.enabled) Neon.Cyan else Neon.Text, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text(c.code + if (c.custom) " • يدوي" else if (c.source.isNotEmpty()) " • ${c.source}" else "", color = Neon.TextDim, fontSize = 11.sp, maxLines = 1)
                         }
                         Switch(
-                            c.enabled, { on -> toggle(i, on) },
+                            c.enabled, { on -> toggle(i, on) }, Modifier.scale(0.8f),
                             colors = SwitchDefaults.colors(checkedTrackColor = Neon.Cyan, checkedThumbColor = Neon.Bg),
                         )
                     }

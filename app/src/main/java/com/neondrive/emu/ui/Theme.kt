@@ -11,6 +11,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -28,21 +31,29 @@ object Neon {
     val Bg = Color(0xFF07060F)
     val Surface = Color(0xFF110E22)
     val SurfaceHi = Color(0xFF1A1533)
-    val Cyan = Color(0xFF00E5FF)
-    val Blue = Color(0xFF2F6BFF)
-    val Magenta = Color(0xFFFF2BD6)
-    val Purple = Color(0xFF8A2BE2)
     val Text = Color(0xFFEDEBFF)
     val TextDim = Color(0xFF9C97C2)
 
-    val edge = Brush.linearGradient(listOf(Cyan, Blue, Purple, Magenta))
-    val glowText = TextStyle(
-        color = Text, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp,
-        shadow = Shadow(color = Cyan, blurRadius = 24f),
-    )
+    /** Interface palette (Settings ▸ الثيم). State-backed, so changing it recolours the app live. */
+    var ui by mutableStateOf(NeonPalette.default)
+    /** Touch-button palette. */
+    var pad by mutableStateOf(NeonPalette.default)
+
+    val Cyan: Color get() = ui.sample(0f)
+    val Blue: Color get() = ui.sample(0.33f)
+    val Purple: Color get() = ui.sample(0.66f)
+    val Magenta: Color get() = ui.sample(1f)
+
+    val edge: Brush get() = Brush.linearGradient(ui.stops)
+    val glowText: TextStyle
+        get() = TextStyle(
+            color = Text, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp,
+            shadow = Shadow(color = Cyan, blurRadius = 24f),
+        )
 }
 
-private val scheme = darkColorScheme(
+@Composable
+private fun scheme() = darkColorScheme(
     primary = Neon.Cyan, onPrimary = Color.Black,
     secondary = Neon.Magenta, onSecondary = Color.Black,
     tertiary = Neon.Purple,
@@ -53,7 +64,7 @@ private val scheme = darkColorScheme(
 )
 
 @Composable
-fun NeonTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = scheme, content = content)
+fun NeonTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = scheme(), content = content)
 
 /** Soft outer glow + gradient border, like the app icon. */
 fun Modifier.neonGlow(radius: Dp = 18.dp, glow: Color = Neon.Cyan, strength: Float = 0.35f): Modifier =

@@ -84,8 +84,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             )
         }
 
-        fun usesWideCore(settings: Settings, game: Game) =
-            settings.aspect == AspectMode.WIDE_NATIVE && game.system == GameSystem.GENESIS
+        /** The widescreen core is not used: LibretroDroid draws its wider frames incorrectly (split picture). */
+        @Suppress("UNUSED_PARAMETER")
+        fun usesWideCore(settings: Settings, game: Game) = false
 
         fun statesDir(context: Context) = File(context.filesDir, "states").apply { mkdirs() }
 
@@ -260,7 +261,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         if (appliedAspect == mode) return
         appliedAspect = mode
         val holder = retroView.holder
-        if (mode == AspectMode.ORIGINAL || mode == AspectMode.WIDE_NATIVE) {
+        if (mode == AspectMode.ORIGINAL) {
             holder.setSizeFromLayout()
         } else {
             val native = when (game.system) { GameSystem.GAME_GEAR -> 10f / 9f; else -> 4f / 3f }

@@ -108,6 +108,10 @@ class NeonApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashReporter.install(this)
+        // Apply the saved theme before any screen is drawn.
+        val settings = com.neondrive.emu.data.Settings(this)
+        com.neondrive.emu.ui.Neon.ui = settings.uiPalette
+        com.neondrive.emu.ui.Neon.pad = settings.padPalette
         // Unpack the offline cheat database in the background on first launch / after updates.
         Thread { runCatching { com.neondrive.emu.data.OfflineDb.ensureCheats(this) } }.apply { priority = Thread.MIN_PRIORITY }.start()
     }

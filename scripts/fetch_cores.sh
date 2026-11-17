@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="https://buildbot.libretro.com/nightly/android/latest"
-CORES=("genesis_plus_gx" "genesis_plus_gx_wide")
+CORES=("genesis_plus_gx")
 ABIS=("arm64-v8a" "armeabi-v7a")
 
 tmp="$(mktemp -d)"

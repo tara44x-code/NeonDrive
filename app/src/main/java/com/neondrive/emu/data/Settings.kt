@@ -15,7 +15,6 @@ enum class VideoFilter(val label: String) {
 /** How the picture fills the phone screen. [ratio] = forced display ratio (null = engine decides). */
 enum class AspectMode(val label: String, val ratio: Float?) {
     ORIGINAL("أصلي", null),
-    WIDE_NATIVE("عريض حقيقي 16:9", null),   // Genesis Plus GX Wide: shows more of the level (Mega Drive)
     STRETCH_16_9("تمدد 16:9", 16f / 9f),
     STRETCH_16_10("16:10", 16f / 10f),
     STRETCH_3_2("3:2", 3f / 2f),
@@ -49,7 +48,7 @@ class Settings(context: Context) {
 
     var aspect: AspectMode
         get() = runCatching { AspectMode.valueOf(p.getString("aspect", null)!!) }
-            .getOrElse { if (p.getBoolean("wide", false)) AspectMode.WIDE_NATIVE else AspectMode.ORIGINAL }
+            .getOrElse { if (p.getBoolean("wide", false)) AspectMode.STRETCH_16_9 else AspectMode.ORIGINAL }
         set(v) = p.edit().putString("aspect", v.name).apply()
 
     var touchMode: TouchMode
@@ -77,6 +76,15 @@ class Settings(context: Context) {
     var autoResume: Boolean
         get() = p.getBoolean("autoResume", true)
         set(v) = p.edit().putBoolean("autoResume", v).apply()
+
+    // ---- Theme ----
+    var uiPalette: com.neondrive.emu.ui.NeonPalette
+        get() = com.neondrive.emu.ui.NeonPalette.byId(p.getString("uiPal", null), p.getString("uiPalC", null))
+        set(v) = p.edit().putString("uiPal", v.id).putString("uiPalC", v.encode()).apply()
+
+    var padPalette: com.neondrive.emu.ui.NeonPalette
+        get() = com.neondrive.emu.ui.NeonPalette.byId(p.getString("padPal", null), p.getString("padPalC", null))
+        set(v) = p.edit().putString("padPal", v.id).putString("padPalC", v.encode()).apply()
 
     var haptics: Boolean
         get() = p.getBoolean("haptics", true)

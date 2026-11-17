@@ -18,6 +18,12 @@ import com.neondrive.emu.data.TouchMode
 import com.neondrive.emu.game.ControllerSetupActivity
 import android.content.Intent
 import com.neondrive.emu.data.OfflineDb
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import com.neondrive.emu.data.GameDatabase
 import com.neondrive.emu.data.CheatRepository
 import com.neondrive.emu.data.GameSystem
@@ -49,6 +55,23 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             Text("الإعدادات", style = Neon.glowText)
         }
 
+        Section("الثيم والألوان") {
+            ThemePicker(
+                title = "ألوان الواجهة",
+                current = Neon.ui,
+                onPick = { Neon.ui = it; s.uiPalette = it },
+            )
+            Spacer(Modifier.height(10.dp))
+            ThemePicker(
+                title = "ألوان أزرار اللعب",
+                current = Neon.pad,
+                onPick = { Neon.pad = it; s.padPalette = it },
+            )
+            Spacer(Modifier.height(6.dp))
+            Text("معاينة الأزرار", color = Neon.TextDim, fontSize = 12.sp)
+            PadPreview()
+        }
+
         Section("الصورة والدقة") {
             val auto = vm.profile?.autoFilter?.label
             Text(
@@ -64,7 +87,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Text("نسبة العرض", color = Neon.Text, fontSize = 14.sp)
             Text(
-                "أصلي = نفس الجهاز الأصلي • عريض حقيقي = يكشف جزء أكبر من المرحلة (Mega Drive) • تمدد/ملء الشاشة = تكبير الصورة على قياس موبايلك",
+                "أصلي = نفس نسبة الجهاز الأصلي • تمدد / ملء الشاشة = تكبير الصورة على قياس موبايلك",
                 color = Neon.TextDim, fontSize = 11.sp,
             )
             FlowRowCompat {
@@ -167,3 +190,57 @@ private fun neonSlider() = SliderDefaults.colors(thumbColor = Neon.Magenta, acti
 @Composable
 private fun FlowRowCompat(content: @Composable () -> Unit) =
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
+
+/** Preset palettes + a custom 2–3 colour gradient built from swatches. */
+@Composable
+private fun ThemePicker(title: String, current: NeonPalette, onPick: (NeonPalette) -> Unit) {
+    var customOpen by remember { mutableStateOf(current.id == "custom") }
+    var picks by remember { mutableStateOf(if (current.id == "custom") current.stops else listOf(NeonPalette.swatches[0], NeonPalette.swatches[9])) }
+
+    Text(title, color = Neon.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(6.dp))
+    NeonPalette.presets.chunked(2).forEach { row ->
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            row.forEach { p ->
+                Box(Modifier.weight(1f)) { PaletteOption(p, current.id == p.id) { customOpen = false; onPick(p) } }
+            }
+            if (row.size == 1) Spacer(Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+    PaletteOption(NeonPalette.custom(picks), current.id == "custom") { customOpen = !customOpen; onPick(NeonPalette.custom(picks)) }
+
+    if (customOpen) {
+        Spacer(Modifier.height(8.dp))
+        Text("اختر لحد 3 ألوان بالترتيب (اضغط اللون مرة ثانية حتى تشيله)", color = Neon.TextDim, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        FlowRowCompat {
+            NeonPalette.swatches.forEach { c ->
+                val index = picks.indexOf(c)
+                Box(
+                    Modifier.size(34.dp).clip(CircleShape).background(c)
+                        .border(if (index >= 0) 3.dp else 1.dp, if (index >= 0) Color.White else Neon.SurfaceHi, CircleShape)
+                        .clickable {
+                            val next = if (index >= 0) picks - c else (picks + c).takeLast(3)
+                            if (next.size >= 2) { picks = next; onPick(NeonPalette.custom(next)) } else picks = next
+                        },
+                    contentAlignment = Alignment.Center,
+                ) { if (index >= 0) Text("${index + 1}", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            }
+        }
+    }
+}
+
+/** Small live preview of the touch buttons with the chosen pad palette. */
+@Composable
+private fun PadPreview() {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf("A" to 0f, "B" to 0.2f, "C" to 0.4f, "X" to 0.6f, "Y" to 0.8f, "Z" to 1f).forEach { (label, t) ->
+            val c = Neon.pad.sample(t)
+            Box(
+                Modifier.size(38.dp).clip(CircleShape).background(Neon.Surface).border(2.dp, c, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Text(label, color = c, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+        }
+    }
+}

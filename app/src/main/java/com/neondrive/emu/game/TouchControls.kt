@@ -92,24 +92,24 @@ fun TouchControls(
             when {
                 cfg.system == GameSystem.GENESIS && cfg.sixButtons -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(Modifier.padding(start = b / 2), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FaceButton("X", b * 0.85f, Neon.Purple, SegaKeys.X, cfg.haptics, onKey)
-                        FaceButton("Y", b * 0.85f, Neon.Purple, SegaKeys.Y, cfg.haptics, onKey)
-                        FaceButton("Z", b * 0.85f, Neon.Purple, SegaKeys.Z, cfg.haptics, onKey)
+                        FaceButton("X", b * 0.85f, Neon.pad.sample(0.6f), SegaKeys.X, cfg.haptics, onKey)
+                        FaceButton("Y", b * 0.85f, Neon.pad.sample(0.8f), SegaKeys.Y, cfg.haptics, onKey)
+                        FaceButton("Z", b * 0.85f, Neon.pad.sample(1f), SegaKeys.Z, cfg.haptics, onKey)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FaceButton("A", b, Neon.Cyan, SegaKeys.A, cfg.haptics, onKey)
-                        FaceButton("B", b, Neon.Blue, SegaKeys.B, cfg.haptics, onKey)
-                        FaceButton("C", b, Neon.Magenta, SegaKeys.C, cfg.haptics, onKey)
+                        FaceButton("A", b, Neon.pad.sample(0f), SegaKeys.A, cfg.haptics, onKey)
+                        FaceButton("B", b, Neon.pad.sample(0.2f), SegaKeys.B, cfg.haptics, onKey)
+                        FaceButton("C", b, Neon.pad.sample(0.4f), SegaKeys.C, cfg.haptics, onKey)
                     }
                 }
                 cfg.system == GameSystem.GENESIS -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FaceButton("A", b, Neon.Cyan, SegaKeys.A, cfg.haptics, onKey, Modifier.padding(top = b / 2))
-                    FaceButton("B", b, Neon.Blue, SegaKeys.B, cfg.haptics, onKey, Modifier.padding(top = b / 4))
-                    FaceButton("C", b, Neon.Magenta, SegaKeys.C, cfg.haptics, onKey)
+                    FaceButton("A", b, Neon.pad.sample(0f), SegaKeys.A, cfg.haptics, onKey, Modifier.padding(top = b / 2))
+                    FaceButton("B", b, Neon.pad.sample(0.2f), SegaKeys.B, cfg.haptics, onKey, Modifier.padding(top = b / 4))
+                    FaceButton("C", b, Neon.pad.sample(0.4f), SegaKeys.C, cfg.haptics, onKey)
                 }
                 else -> Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    FaceButton("1", b * 1.1f, Neon.Cyan, SegaKeys.ONE, cfg.haptics, onKey, Modifier.padding(top = b / 3))
-                    FaceButton("2", b * 1.1f, Neon.Magenta, SegaKeys.TWO, cfg.haptics, onKey)
+                    FaceButton("1", b * 1.1f, Neon.pad.sample(0f), SegaKeys.ONE, cfg.haptics, onKey, Modifier.padding(top = b / 3))
+                    FaceButton("2", b * 1.1f, Neon.pad.sample(1f), SegaKeys.TWO, cfg.haptics, onKey)
                 }
             }
         }
@@ -141,7 +141,7 @@ private fun DPad(modifier: Modifier, size: Dp, haptics: Boolean, onDpad: (Float,
                 val c = Offset(this.size.width / 2, this.size.height / 2)
                 val r = this.size.minDimension / 2
                 drawCircle(Neon.Surface.copy(alpha = 0.55f), r, c)
-                drawCircle(Neon.Cyan.copy(alpha = 0.8f), r, c, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+                drawCircle(Neon.pad.sample(0f).copy(alpha = 0.8f), r, c, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
                 val arm = r * 0.34f
                 // cross
                 drawRoundRect(
@@ -164,7 +164,7 @@ private fun DPad(modifier: Modifier, size: Dp, haptics: Boolean, onDpad: (Float,
                     val p = Path().apply {
                         moveTo(tip.x, tip.y); lineTo(base.x + side.x, base.y + side.y); lineTo(base.x - side.x, base.y - side.y); close()
                     }
-                    drawPath(p, if (lit) Neon.Magenta else Neon.Cyan.copy(alpha = 0.7f))
+                    drawPath(p, if (lit) Neon.pad.sample(1f) else Neon.pad.sample(0f).copy(alpha = 0.7f))
                 }
                 arrow(0, -1); arrow(0, 1); arrow(-1, 0); arrow(1, 0)
             }
@@ -224,8 +224,8 @@ private fun PillButton(label: String, keyCode: Int, haptics: Boolean, onKey: (In
     val shape = RoundedCornerShape(50)
     Box(
         Modifier.height(30.dp).widthIn(min = 72.dp)
-            .background(if (pressed) Neon.Cyan.copy(alpha = 0.5f) else Neon.Surface.copy(alpha = 0.6f), shape)
-            .border(1.5.dp, Neon.Cyan, shape)
+            .background(if (pressed) Neon.pad.sample(0f).copy(alpha = 0.5f) else Neon.Surface.copy(alpha = 0.6f), shape)
+            .border(1.5.dp, Neon.pad.sample(0f), shape)
             .pointerInput(keyCode) {
                 awaitEachGesture {
                     awaitFirstDown().consume()
@@ -252,8 +252,8 @@ private fun IconPad(
     val onHold by rememberUpdatedState(hold)
     Box(
         Modifier.size(42.dp)
-            .background(if (lit) Neon.Magenta.copy(alpha = 0.45f) else Neon.Surface.copy(alpha = 0.6f), CircleShape)
-            .border(1.5.dp, if (lit) Neon.Magenta else Neon.Cyan, CircleShape)
+            .background(if (lit) Neon.pad.sample(1f).copy(alpha = 0.45f) else Neon.Surface.copy(alpha = 0.6f), CircleShape)
+            .border(1.5.dp, if (lit) Neon.pad.sample(1f) else Neon.pad.sample(0f), CircleShape)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown().consume()
@@ -265,5 +265,5 @@ private fun IconPad(
                 }
             },
         contentAlignment = Alignment.Center,
-    ) { Icon(icon, null, tint = if (lit) Neon.Text else Neon.Cyan, modifier = Modifier.size(22.dp)) }
+    ) { Icon(icon, null, tint = if (lit) Neon.Text else Neon.pad.sample(0f), modifier = Modifier.size(22.dp)) }
 }
