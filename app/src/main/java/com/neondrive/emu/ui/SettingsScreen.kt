@@ -22,6 +22,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
     var six by remember { mutableStateOf(s.sixButtonPad) }
     var rewind by remember { mutableStateOf(s.rewind ?: (vm.profile?.rewindByDefault ?: true)) }
     var haptics by remember { mutableStateOf(s.haptics) }
+    var autoResume by remember { mutableStateOf(s.autoResume) }
     var opacity by remember { mutableFloatStateOf(s.controlsOpacity) }
     var scale by remember { mutableFloatStateOf(s.controlsScale) }
 
@@ -59,6 +60,9 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
         }
 
         Section("المحاكاة") {
+            Toggle("استئناف تلقائي", "ترجع للعبة من نفس المكان اللي طلعت منه", autoResume) {
+                autoResume = it; s.autoResume = it
+            }
             Toggle("الرجوع بالزمن (Rewind)", "يستهلك ذاكرة إضافية؛ مطفأ تلقائياً بالأجهزة الضعيفة", rewind) {
                 rewind = it; s.rewind = it
             }
@@ -66,6 +70,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
 
         Section("حول") {
             Text(
+                "تطوير: مهند سات لنك\n" +
                 "NeonDrive مجاني ومفتوح المصدر (GPLv3).\nالمحرك: Genesis Plus GX عبر LibretroDroid.\n" +
                     "الأسماء والأغلفة والجيتات من قاعدة بيانات libretro.\nالتطبيق لا يحتوي على أي ألعاب.",
                 color = Neon.TextDim, fontSize = 12.sp,

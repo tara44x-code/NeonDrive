@@ -30,6 +30,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.neondrive.emu.data.Cheat
+import com.neondrive.emu.data.CheatFetch
+import com.neondrive.emu.data.TitleMatch
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import com.neondrive.emu.data.CheatRepository
 import com.neondrive.emu.data.Game
 import com.neondrive.emu.data.Settings
@@ -167,9 +172,17 @@ class GameMenuActivity : ComponentActivity() {
         var loading by remember { mutableStateOf(false) }
         var status by remember { mutableStateOf<String?>(null) }
         var showAdd by remember { mutableStateOf(false) }
+        var showSearch by remember { mutableStateOf(false) }
+        var query by remember { mutableStateOf(game.headerName?.let { TitleMatch.base(it) } ?: game.fileTitle) }
+        var results by remember { mutableStateOf<List<String>>(emptyList()) }
 
         fun update(list: List<Cheat>) {
             cheats = list; repo.save(game, list); cheatsChanged = true; setResultFor(null)
+        }
+
+        fun showFetched(r: CheatFetch) {
+            cheats = r.cheats; cheatsChanged = true; setResultFor(null)
+            status = "تم تحميل ${r.cheats.size} جيت من: " + r.files.joinToString("، ")
         }
 
         fun download() {
@@ -177,24 +190,62 @@ class GameMenuActivity : ComponentActivity() {
             lifecycleScope.launch {
                 val result = runCatching { repo.fetchOnline(game) }
                 loading = false
-                result.onSuccess { list ->
-                    if (list == null) status = "ما لكينا جيتات أونلاين لهاي اللعبة، تكدر تضيف كود يدوي."
-                    else { cheats = list; cheatsChanged = true; setResultFor(null); status = "تم تحميل ${list.size} جيت" }
+                result.onSuccess { r ->
+                    if (r == null) { status = "ما تعرّفت على اللعبة تلقائياً، اكتب اسمها وابحث 👇"; showSearch = true }
+                    else showFetched(r)
                 }.onFailure { status = "تعذر الاتصال بالإنترنت" }
             }
         }
 
+        fun runSearch() {
+            loading = true
+            lifecycleScope.launch {
+                results = runCatching { repo.search(game.system, query) }.getOrDefault(emptyList())
+                loading = false
+                if (results.isEmpty()) status = "ماكو نتائج لـ \"$query\""
+            }
+        }
+
+        fun pick(name: String) {
+            loading = true
+            lifecycleScope.launch {
+                val r = runCatching { repo.fetchFiles(game, listOf(name)) }.getOrNull()
+                loading = false
+                if (r == null) status = "تعذر تحميل الملف" else { showFetched(r); showSearch = false; results = emptyList() }
+            }
+        }
+
         LaunchedEffect(Unit) { if (cheats.isEmpty()) download() }
+
 
         Column(Modifier.padding(18.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع", tint = Neon.Cyan) }
                 Text("الجيتات", style = Neon.glowText.copy(fontSize = 20.sp), modifier = Modifier.weight(1f))
                 IconButton(onClick = ::download, enabled = !loading) { Icon(Icons.Default.CloudDownload, "تحديث", tint = Neon.Cyan) }
+                IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Default.Search, "بحث يدوي", tint = Neon.Cyan) }
                 IconButton(onClick = { showAdd = true }) { Icon(Icons.Default.Add, "إضافة", tint = Neon.Magenta) }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Neon.Magenta, trackColor = Neon.Surface)
             status?.let { Text(it, color = Neon.TextDim, fontSize = 12.sp) }
+
+            if (showSearch) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        query, { query = it }, Modifier.weight(1f), singleLine = true,
+                        placeholder = { Text("اسم اللعبة بالإنجليزي") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { runSearch() }),
+                    )
+                    IconButton(onClick = ::runSearch) { Icon(Icons.Default.Search, "بحث", tint = Neon.Cyan) }
+                }
+                results.take(8).forEach { name ->
+                    Text(
+                        name, color = Neon.Cyan, fontSize = 13.sp,
+                        modifier = Modifier.fillMaxWidth().clickable { pick(name) }.padding(vertical = 6.dp),
+                    )
+                }
+            }
 
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 itemsIndexed(cheats) { i, c ->
@@ -205,7 +256,7 @@ class GameMenuActivity : ComponentActivity() {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(c.description, color = Neon.Text, fontSize = 14.sp)
-                            Text(c.code + if (c.custom) " • يدوي" else "", color = Neon.TextDim, fontSize = 11.sp, maxLines = 1)
+                            Text(c.code + if (c.custom) " • يدوي" else if (c.source.isNotEmpty()) " • ${c.source}" else "", color = Neon.TextDim, fontSize = 11.sp, maxLines = 1)
                         }
                         Switch(
                             c.enabled, { on -> update(cheats.toMutableList().also { it[i] = c.copy(enabled = on) }) },

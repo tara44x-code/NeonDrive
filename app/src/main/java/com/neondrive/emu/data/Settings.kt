@@ -36,6 +36,10 @@ class Settings(context: Context) {
         get() = if (p.contains("rewind")) p.getBoolean("rewind", true) else null
         set(v) { if (v == null) p.edit().remove("rewind").apply() else p.edit().putBoolean("rewind", v).apply() }
 
+    var autoResume: Boolean
+        get() = p.getBoolean("autoResume", true)
+        set(v) = p.edit().putBoolean("autoResume", v).apply()
+
     var haptics: Boolean
         get() = p.getBoolean("haptics", true)
         set(v) = p.edit().putBoolean("haptics", v).apply()

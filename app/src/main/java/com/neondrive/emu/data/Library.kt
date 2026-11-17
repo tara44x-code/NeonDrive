@@ -20,15 +20,19 @@ data class Game(
     val crc: String,
     val dbName: String?,      // official No-Intro name, if identified
     val lastPlayed: Long = 0L,
+    val headerName: String? = null, // name stored inside the cartridge header
 ) {
-    val title: String get() = (dbName ?: (innerName ?: fileName).substringBeforeLast('.'))
+    /** File name without extension / tags, e.g. "Earthworm Jim (U) [!].bin" -> "Earthworm Jim" */
+    val fileTitle: String get() = TitleMatch.base(innerName ?: fileName)
+
+    val title: String get() = dbName ?: fileTitle
     val romExtension: String get() = (innerName ?: fileName).substringAfterLast('.').lowercase()
     val coverUrl: String? get() = dbName?.let { LibretroUrls.boxartUrl(system, it) }
 
     fun toJson() = JSONObject().apply {
         put("uri", uri); put("fileName", fileName); put("innerName", innerName ?: "")
         put("system", system.name); put("crc", crc); put("dbName", dbName ?: "")
-        put("lastPlayed", lastPlayed)
+        put("lastPlayed", lastPlayed); put("headerName", headerName ?: "")
     }
 
     companion object {
@@ -40,6 +44,7 @@ data class Game(
             crc = o.getString("crc"),
             dbName = o.optString("dbName").ifEmpty { null },
             lastPlayed = o.optLong("lastPlayed"),
+            headerName = o.optString("headerName").ifEmpty { null },
         )
     }
 }
@@ -103,22 +108,35 @@ class LibraryRepository(private val context: Context) {
                         val e = zip.nextEntry ?: return null
                         val innerExt = e.name.substringAfterLast('.', "").lowercase()
                         val system = GameSystem.fromExtension(innerExt) ?: continue
-                        val crc = crcOf(zip)
                         val inner = e.name.substringAfterLast('/')
-                        return Game(uri.toString(), name, inner, system, crc, db.lookup(system, crc))
+                        return build(uri, name, inner, system, zip)
                     }
                 }
             }
             val system = GameSystem.fromExtension(ext) ?: return null
-            val crc = crcOf(stream)
-            return Game(uri.toString(), name, null, system, crc, db.lookup(system, crc))
+            return build(uri, name, null, system, stream)
         }
     }
 
-    private fun crcOf(stream: InputStream): String {
+    private fun build(uri: Uri, fileName: String, inner: String?, system: GameSystem, stream: InputStream): Game {
+        val (crc, head) = crcAndHeader(stream)
+        val header = RomHeader.parse(system, head)
+        val shownName = inner ?: fileName
+        val hints = listOfNotNull(TitleMatch.base(shownName), header?.name)
+        val dbName = db.identify(system, crc, header?.serial, hints, TitleMatch.tags(shownName))
+        return Game(uri.toString(), fileName, inner, system, crc, dbName, headerName = header?.name)
+    }
+
+    /** CRC32 of the whole file + its first 512 bytes (cartridge header). */
+    private fun crcAndHeader(stream: InputStream): Pair<String, ByteArray> {
         val crc = CRC32(); val buf = ByteArray(64 * 1024)
-        while (true) { val n = stream.read(buf); if (n < 0) break; crc.update(buf, 0, n) }
-        return "%08X".format(crc.value)
+        val head = java.io.ByteArrayOutputStream(512)
+        while (true) {
+            val n = stream.read(buf); if (n < 0) break
+            crc.update(buf, 0, n)
+            if (head.size() < 512) head.write(buf, 0, minOf(n, 512 - head.size()))
+        }
+        return "%08X".format(crc.value) to head.toByteArray()
     }
 
     /** Copies (or extracts) the ROM to a cache file the core can open by path. */

@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -55,6 +57,7 @@ class GameActivity : ComponentActivity() {
         private const val EXTRA_ROM = "rom"
         const val CORE_NORMAL = "libgenesis_plus_gx_libretro_android.so"
         const val CORE_WIDE = "libgenesis_plus_gx_wide_libretro_android.so"
+        const val AUTO_SLOT = 0
 
         fun start(context: Context, game: Game, rom: File) {
             context.startActivity(
@@ -143,7 +146,12 @@ class GameActivity : ComponentActivity() {
             override fun handleOnBackPressed() = openMenu()
         })
 
-        setContent { NeonTheme { GameScreen() } }
+        // Game controls must stay left-to-right even when the phone language is Arabic.
+        setContent {
+            NeonTheme {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) { GameScreen() }
+            }
+        }
     }
 
     @Composable
@@ -196,6 +204,12 @@ class GameActivity : ComponentActivity() {
                 }
             }
             applyCheats()
+            if (settings.autoResume) {
+                val auto = stateFile(this@GameActivity, game, AUTO_SLOT)
+                if (auto.exists() && runCatching { retroView.unserializeState(auto.readBytes()) }.getOrDefault(false)) {
+                    message = "تم الاستئناف من آخر نقطة لعبت بيها"
+                }
+            }
         }
         // Periodic SRAM autosave + rewind capture, only while the game is visible.
         lifecycleScope.launch {
@@ -264,6 +278,16 @@ class GameActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         saveSram()
+        saveAutoState()
+    }
+
+    /** Snapshot used by "auto resume" next time the game is opened. */
+    private fun saveAutoState() {
+        if (!coreReady || !settings.autoResume) return
+        runCatching {
+            val bytes = retroView.serializeState()
+            if (bytes.isNotEmpty()) stateFile(this, game, AUTO_SLOT).writeBytes(bytes)
+        }
     }
 
     // ---------- Menu ----------
@@ -293,9 +317,10 @@ class GameActivity : ComponentActivity() {
             }
             GameMenuActivity.ACTION_RESET -> lifecycleScope.launch(Dispatchers.Default) {
                 retroView.reset(); synchronized(rewindBuffer) { rewindBuffer.clear() }
+                stateFile(this@GameActivity, game, AUTO_SLOT).delete()
             }
             GameMenuActivity.ACTION_TOUCH -> showTouchAnyway = !showTouchAnyway
-            GameMenuActivity.ACTION_QUIT -> { saveSram(); finish() }
+            GameMenuActivity.ACTION_QUIT -> finish() // onPause saves SRAM + auto state
         }
     }
 
