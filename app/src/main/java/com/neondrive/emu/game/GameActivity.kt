@@ -56,6 +56,7 @@ import com.neondrive.emu.ui.Neon
 import com.neondrive.emu.ui.NeonTheme
 import com.swordfish.libretrodroid.GLRetroView
 import com.swordfish.libretrodroid.GLRetroViewData
+import com.swordfish.libretrodroid.LibretroDroid
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -136,7 +137,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         settings = Settings(this)
         profile = DeviceProfiler.get(this)
         cheats = CheatRepository(this)
-        rewindEnabled = settings.rewind ?: false
+        rewindEnabled = settings.rewind ?: profile.rewindByDefault
         aspect = settings.aspect
         padMap = settings.padMap
         wideCore = usesWideCore(settings, game)
@@ -407,11 +408,32 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
     }
 
+    /**
+     * Genesis Plus GX keeps every code it receives in a fixed table of 150 entries and writes past
+     * its end when it is full (native crash). So: clear the table, then send ONLY enabled cheats,
+     * never more than [CheatRepository.MAX_PARTS] code parts in total.
+     */
     private suspend fun applyCheats() = withContext(Dispatchers.Default) {
-        cheats.load(game).forEachIndexed { i, c ->
+        val enabled = cheats.load(game).filter { it.enabled }
+        onEmulationThread { LibretroDroid.resetCheat() }
+        var parts = 0
+        var skipped = 0
+        enabled.forEachIndexed { i, c ->
             val code = c.code.uppercase().replace(" ", "")
-            runCatching { retroView.setCheat(i, c.enabled, code) }
+            val p = CheatRepository.parts(code)
+            if (parts + p > CheatRepository.MAX_PARTS) { skipped++; return@forEachIndexed }
+            parts += p
+            runCatching { retroView.setCheat(i, true, code) }
         }
+        CrashReporter.crumb("cheats applied: ${enabled.size - skipped} ($parts parts), skipped $skipped")
+        if (skipped > 0) message = "تم تفعيل ${enabled.size - skipped} جيت • $skipped ما تفعّل لأن المحرك وصل الحد"
+    }
+
+    /** Runs [block] on the GL/emulation thread and waits for it (same as LibretroDroid's own calls). */
+    private fun onEmulationThread(block: () -> Unit) {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        retroView.queueEvent { try { runCatching(block) } finally { latch.countDown() } }
+        latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     override fun onDestroy() {

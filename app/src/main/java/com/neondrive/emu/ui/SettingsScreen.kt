@@ -17,6 +17,13 @@ import com.neondrive.emu.data.AspectMode
 import com.neondrive.emu.data.TouchMode
 import com.neondrive.emu.game.ControllerSetupActivity
 import android.content.Intent
+import com.neondrive.emu.data.OfflineDb
+import com.neondrive.emu.data.GameDatabase
+import com.neondrive.emu.data.CheatRepository
+import com.neondrive.emu.data.GameSystem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
@@ -27,7 +34,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
     var touchMode by remember { mutableStateOf(s.touchMode) }
     val context = LocalContext.current
     var six by remember { mutableStateOf(s.sixButtonPad) }
-    var rewind by remember { mutableStateOf(s.rewind ?: false) }
+    var rewind by remember { mutableStateOf(s.rewind ?: (vm.profile?.rewindByDefault ?: true)) }
     var haptics by remember { mutableStateOf(s.haptics) }
     var autoResume by remember { mutableStateOf(s.autoResume) }
     var opacity by remember { mutableFloatStateOf(s.controlsOpacity) }
@@ -87,9 +94,40 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             Toggle("استئناف تلقائي", "ترجع للعبة من نفس المكان اللي طلعت منه", autoResume) {
                 autoResume = it; s.autoResume = it
             }
-            Toggle("الرجوع بالزمن (Rewind)", "تجريبي، يستهلك ذاكرة إضافية", rewind) {
+            Toggle("الرجوع بالزمن (Rewind)", "زر ⏪ يرجعك ثواني لورا (قبل الموت مثلاً)", rewind) {
                 rewind = it; s.rewind = it
             }
+        }
+
+        Section("قاعدة البيانات (تشتغل بدون إنترنت)") {
+            val scope = rememberCoroutineScope()
+            var info by remember { mutableStateOf("…") }
+            var busy by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                info = withContext(Dispatchers.IO) {
+                    "مدمجة بالتطبيق: ${OfflineDb.cheatFileCount(context)} ملف جيتات + أسماء كل ألعاب سيكا" +
+                        (OfflineDb.bundledVersion(context)?.let { " • تاريخ $it" } ?: "")
+                }
+            }
+            Text(info, color = Neon.TextDim, fontSize = 12.sp)
+            Text("التعرّف على الألعاب والجيتات يشتغل بدون نت. التحديث اختياري لجلب أحدث الإضافات.", color = Neon.TextDim, fontSize = 11.sp)
+            OutlinedButton(
+                enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    busy = true; info = "جاري التحديث…"
+                    scope.launch {
+                        info = withContext(Dispatchers.IO) {
+                            val dats = GameDatabase(context).refreshOnline()
+                            val repo = CheatRepository(context)
+                            val idx = GameSystem.entries.sumOf { repo.onlineIndex(it, force = true).size }
+                            if (dats == 0 && idx == 0) "تعذر الاتصال بالإنترنت — القاعدة المدمجة تبقى شغالة"
+                            else "تم التحديث: $dats قواعد أسماء • $idx ملف جيتات أونلاين"
+                        }
+                        busy = false
+                        vm.rescanAll()
+                    }
+                },
+            ) { Text("تحديث من الإنترنت", color = Neon.Cyan) }
         }
 
         Section("حول") {

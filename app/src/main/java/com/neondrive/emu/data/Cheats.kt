@@ -25,7 +25,7 @@ data class CheatFetch(val files: List<String>, val cheats: List<Cheat>)
  * against the No-Intro name, the name inside the cartridge header and the file name, with fuzzy matching.
  * All variants of a game are merged (e.g. "(USA)" + "(Action Replay)" + "(Rumbles)").
  */
-class CheatRepository(context: Context) {
+class CheatRepository(private val context: Context) {
     private val dir = File(context.filesDir, "cheats").apply { mkdirs() }
     private val indexDir = File(context.filesDir, "db").apply { mkdirs() }
 
@@ -47,10 +47,17 @@ class CheatRepository(context: Context) {
         file(game).writeText(arr.toString())
     }
 
-    /** All cheat file names (without .cht) for a console; cached for 7 days. */
+    /** All cheat file names for a console: bundled offline pack + online index (if downloaded). */
     fun index(system: GameSystem): List<String> {
+        val local = OfflineDb.cheatNames(context, system)
+        val online = File(indexDir, "${system.name}.cht.idx").takeIf { it.exists() }?.readLines()?.filter { it.isNotBlank() }.orEmpty()
+        return (local + online).distinct().ifEmpty { onlineIndex(system) }
+    }
+
+    /** Online list of cheat files (GitHub); cached for 7 days. */
+    fun onlineIndex(system: GameSystem, force: Boolean = false): List<String> {
         val f = File(indexDir, "${system.name}.cht.idx")
-        val stale = !f.exists() || System.currentTimeMillis() - f.lastModified() > 7L * 24 * 3600 * 1000
+        val stale = force || !f.exists() || System.currentTimeMillis() - f.lastModified() > 7L * 24 * 3600 * 1000
         if (stale) runCatching {
             val url = "https://api.github.com/repos/libretro/libretro-database/git/trees/master:cht%2F${Uri.encode(system.dbName)}"
             val tree = JSONObject(Net.getText(url) ?: return@runCatching).getJSONArray("tree")
@@ -61,7 +68,7 @@ class CheatRepository(context: Context) {
         return if (f.exists()) f.readLines().filter { it.isNotBlank() } else emptyList()
     }
 
-    /** Automatic lookup. Returns null if nothing matched. */
+    /** Automatic lookup (works offline). Returns null if nothing matched. */
     suspend fun fetchOnline(game: Game): CheatFetch? = withContext(Dispatchers.IO) {
         val hints = listOfNotNull(game.dbName, game.headerName, game.fileTitle)
         val prefer = TitleMatch.tags(game.dbName ?: game.fileName)
@@ -92,7 +99,10 @@ class CheatRepository(context: Context) {
         val online = mutableListOf<Cheat>()
         val seen = mutableSetOf<String>()
         for (name in files) {
-            val text = Net.getText(LibretroUrls.cheatUrl(game.system, name)) ?: continue
+            // offline pack first, internet only if this file isn't bundled
+            val text = OfflineDb.cheatText(context, game.system, name)
+                ?: runCatching { Net.getText(LibretroUrls.cheatUrl(game.system, name)) }.getOrNull()
+                ?: continue
             found += name
             val label = Regex("""\(([^)]*)\)""").findAll(name).joinToString(" ") { it.groupValues[1] }
             parseCht(text).forEach { c ->
@@ -108,6 +118,11 @@ class CheatRepository(context: Context) {
     }
 
     companion object {
+        /** Engine limit: Genesis Plus GX keeps at most 150 code parts ("AAAA-BBBB+CCCC-DDDD" = 2 parts). */
+        const val MAX_PARTS = 140
+
+        fun parts(code: String) = code.count { it == '+' } + 1
+
         /** Parses RetroArch .cht: cheatN_desc = "...", cheatN_code = "...", cheatN_enable = false */
         fun parseCht(text: String): List<Cheat> {
             val kv = Regex("""^\s*cheat(\d+)_(desc|code|enable)\s*=\s*"?(.*?)"?\s*$""")

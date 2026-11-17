@@ -108,5 +108,7 @@ class NeonApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashReporter.install(this)
+        // Unpack the offline cheat database in the background on first launch / after updates.
+        Thread { runCatching { com.neondrive.emu.data.OfflineDb.ensureCheats(this) } }.apply { priority = Thread.MIN_PRIORITY }.start()
     }
 }

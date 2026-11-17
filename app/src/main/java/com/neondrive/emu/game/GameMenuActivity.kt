@@ -194,9 +194,21 @@ class GameMenuActivity : ComponentActivity() {
             cheats = list; repo.save(game, list); cheatsChanged = true; setResultFor(null)
         }
 
+        fun toggle(i: Int, on: Boolean) {
+            val c = cheats[i]
+            if (on) {
+                val used = cheats.filter { it.enabled }.sumOf { CheatRepository.parts(it.code) }
+                if (used + CheatRepository.parts(c.code) > CheatRepository.MAX_PARTS) {
+                    status = "وصلت الحد: المحرك يتحمل ${CheatRepository.MAX_PARTS} كود بنفس الوقت. طفّي جيت ثاني أول."
+                    return
+                }
+            }
+            update(cheats.toMutableList().also { it[i] = c.copy(enabled = on) })
+        }
+
         fun showFetched(r: CheatFetch) {
             cheats = r.cheats; cheatsChanged = true; setResultFor(null)
-            status = "تم تحميل ${r.cheats.size} جيت من: " + r.files.joinToString("، ")
+            status = "لكينا ${r.cheats.size} جيت (بدون إنترنت) من: " + r.files.joinToString("، ")
         }
 
         fun download() {
@@ -207,7 +219,7 @@ class GameMenuActivity : ComponentActivity() {
                 result.onSuccess { r ->
                     if (r == null) { status = "ما تعرّفت على اللعبة تلقائياً، اكتب اسمها وابحث 👇"; showSearch = true }
                     else showFetched(r)
-                }.onFailure { status = "تعذر الاتصال بالإنترنت" }
+                }.onFailure { status = "تعذر البحث: ${it.message}" }
             }
         }
 
@@ -242,6 +254,11 @@ class GameMenuActivity : ComponentActivity() {
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Neon.Magenta, trackColor = Neon.Surface)
             status?.let { Text(it, color = Neon.TextDim, fontSize = 12.sp) }
+            val usedParts = cheats.filter { it.enabled }.sumOf { CheatRepository.parts(it.code) }
+            if (cheats.isNotEmpty()) Text(
+                "مفعّل: ${cheats.count { it.enabled }} جيت • $usedParts/${CheatRepository.MAX_PARTS} كود",
+                color = if (usedParts > CheatRepository.MAX_PARTS * 0.8) Neon.Magenta else Neon.Cyan, fontSize = 12.sp,
+            )
 
             if (showSearch) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -264,7 +281,7 @@ class GameMenuActivity : ComponentActivity() {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 itemsIndexed(cheats) { i, c ->
                     Row(
-                        Modifier.fillMaxWidth().clickable { update(cheats.toMutableList().also { it[i] = c.copy(enabled = !c.enabled) }) }
+                        Modifier.fillMaxWidth().clickable { toggle(i, !c.enabled) }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -273,7 +290,7 @@ class GameMenuActivity : ComponentActivity() {
                             Text(c.code + if (c.custom) " • يدوي" else if (c.source.isNotEmpty()) " • ${c.source}" else "", color = Neon.TextDim, fontSize = 11.sp, maxLines = 1)
                         }
                         Switch(
-                            c.enabled, { on -> update(cheats.toMutableList().also { it[i] = c.copy(enabled = on) }) },
+                            c.enabled, { on -> toggle(i, on) },
                             colors = SwitchDefaults.colors(checkedTrackColor = Neon.Cyan, checkedThumbColor = Neon.Bg),
                         )
                     }

@@ -12,6 +12,11 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.neondrive.emu.game.GameActivity
 import com.neondrive.emu.ui.LibraryScreen
 import com.neondrive.emu.ui.LibraryViewModel
@@ -39,9 +44,24 @@ import androidx.compose.ui.unit.sp
 class MainActivity : ComponentActivity() {
     private val vm: LibraryViewModel by viewModels()
 
+    private var crashReport by mutableStateOf<String?>(null)
+
     override fun onStart() {
         super.onStart()
         vm.autoScan() // new games copied into the folder show up automatically
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Android records a crash a moment after the app restarts, so check now and again shortly after.
+        lifecycleScope.launch {
+            repeat(2) { attempt ->
+                if (attempt > 0) delay(2_000)
+                if (crashReport == null) {
+                    crashReport = withContext(Dispatchers.IO) { CrashReporter.pendingReport(this@MainActivity) }
+                }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,8 +71,7 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     var showSettings by rememberSaveable { mutableStateOf(false) }
                     BackHandler(enabled = showSettings) { showSettings = false }
-                    var report by remember { mutableStateOf(CrashReporter.pendingReport(this@MainActivity)) }
-                    report?.let { text -> CrashReportDialog(text) { report = null } }
+                    crashReport?.let { text -> CrashReportDialog(text) { crashReport = null } }
                     if (showSettings) {
                         SettingsScreen(vm, onBack = { showSettings = false })
                     } else {

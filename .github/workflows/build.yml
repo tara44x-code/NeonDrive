@@ -28,6 +28,9 @@ jobs:
       - name: Download libretro cores
         run: bash scripts/fetch_cores.sh
 
+      - name: Bundle offline game database + cheats
+        run: bash scripts/fetch_db.sh
+
       - name: Decode signing key (optional)
         if: env.HAS_SIGNING_KEY == 'true'
         env:

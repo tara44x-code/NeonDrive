@@ -10,7 +10,7 @@ import java.io.File
  *  3. fuzzy title match on the header name / file name.
  * Each DAT (~1 MB) is downloaded once and cached; lookups work offline afterwards.
  */
-class GameDatabase(context: Context) {
+class GameDatabase(private val context: Context) {
     private val dir = File(context.filesDir, "db")
     private val cache = mutableMapOf<GameSystem, Table>()
 
@@ -28,10 +28,21 @@ class GameDatabase(context: Context) {
         return TitleMatch.bestMatches(titleHints, t.names, regionHints, threshold = 0.88).firstOrNull()
     }
 
+    /** Downloads the newest DATs (optional; the bundled copy already works offline). */
+    @Synchronized
+    fun refreshOnline(): Int {
+        var ok = 0
+        GameSystem.entries.forEach { sys ->
+            if (runCatching { Net.download(LibretroUrls.datUrl(sys), File(dir, "${sys.name}.dat")) }.getOrDefault(false)) ok++
+        }
+        cache.clear()
+        return ok
+    }
+
     private fun table(system: GameSystem): Table = cache[system] ?: run {
-        val file = File(dir, "${system.name}.dat")
+        val file = OfflineDb.dat(context, system)   // bundled in the APK -> works offline
         if (!file.exists()) runCatching { Net.download(LibretroUrls.datUrl(system), file) }
-        if (!file.exists()) return Table(emptyMap(), emptyMap(), emptyList()) // offline: retry on next scan
+        if (!file.exists()) return Table(emptyMap(), emptyMap(), emptyList())
 
         val byCrc = HashMap<String, String>(); val bySerial = HashMap<String, String>(); val names = ArrayList<String>()
         block.findAll(file.readText()).forEach { m ->
