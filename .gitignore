@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+# Cores are downloaded by scripts/fetch_cores.sh (CI does this automatically)
+app/src/main/jniLibs/
+*.keystore
+*.jks
