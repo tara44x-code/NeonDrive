@@ -134,6 +134,9 @@ public:
     void setAudioCapture(bool enabled);
     int readCapturedAudio(int16_t* out, int maxSamples);
     int getCoreSampleRate() const { return coreSampleRate; }
+    void setVideoCapture(bool enabled);
+    /** Latest raw game frame, scaled (nearest) to dstW x dstH, as I420. Returns frame number or -1. */
+    int64_t readCapturedFrameI420(uint8_t* dst, int dstW, int dstH);
     std::array<float, 4> getForegroundBounds();
 
     void setShaderConfig(ShaderManager::Config shaderConfig);
@@ -163,6 +166,13 @@ protected:
 
 private:
     std::mutex captureMutex;
+    std::mutex videoCaptureMutex;
+    bool videoCaptureEnabled = false;
+    std::vector<uint32_t> captureFrame;   // 0x00RRGGBB
+    int captureW = 0;
+    int captureH = 0;
+    int64_t captureSeq = 0;
+    void captureVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch);
     std::vector<int16_t> captureBuffer;
     bool captureEnabled = false;
     int coreSampleRate = 44100;

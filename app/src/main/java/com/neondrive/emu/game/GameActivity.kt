@@ -660,7 +660,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         val name = "NeonDrive_" + TitleMatch.base(game.title).replace(Regex("[^A-Za-z0-9]+"), "_").take(40) +
             "_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
         val file = File(cacheDir, "$name.mp4")
-        val rec = GameRecorder(retroView, file)
+        val rec = GameRecorder(file, nativeRatio, if (profile.tier == Tier.HIGH) 720 else 480)
         try { rec.start() } catch (e: Exception) {
             CrashReporter.crumb("recording failed to start: ${e.message}")
             message = "تعذر بدء التسجيل"; return
@@ -668,13 +668,6 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         recorder = rec; recordFile = file
         isRecording = true; recordStartMs = android.os.SystemClock.elapsedRealtime()
         CrashReporter.crumb("recording started")
-        lifecycleScope.launch(safe) {
-            delay(1500)
-            rec.failure?.let { reason ->
-                stopRecording(save = false)
-                message = if (reason == "gles2") "كارت الشاشة بهذا الجهاز ما يدعم تسجيل اللعبة" else "تعذر التسجيل على هذا الجهاز"
-            }
-        }
     }
 
     private fun stopRecording(save: Boolean = true) {

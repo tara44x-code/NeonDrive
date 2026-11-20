@@ -577,6 +577,27 @@ JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_readCaptur
     return n;
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setVideoCapture(
+    JNIEnv* env,
+    jclass obj,
+    jboolean enabled
+) {
+    LibretroDroid::getInstance().setVideoCapture(enabled);
+}
+
+JNIEXPORT jlong JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_readCapturedFrameI420(
+    JNIEnv* env,
+    jclass obj,
+    jobject directBuffer,
+    jint width,
+    jint height
+) {
+    auto* dst = static_cast<uint8_t*>(env->GetDirectBufferAddress(directBuffer));
+    jlong capacity = env->GetDirectBufferCapacity(directBuffer);
+    if (dst == nullptr || capacity < (jlong) width * height * 3 / 2) return -1;
+    return LibretroDroid::getInstance().readCapturedFrameI420(dst, width, height);
+}
+
 JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getCoreSampleRate(
     JNIEnv* env,
     jclass obj

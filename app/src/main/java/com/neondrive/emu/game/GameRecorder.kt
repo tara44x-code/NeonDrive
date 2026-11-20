@@ -1,30 +1,29 @@
 package com.neondrive.emu.game
 
+import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.opengl.EGL14
-import android.opengl.EGLConfig
-import android.opengl.EGLExt
-import android.opengl.EGLSurface
-import android.opengl.GLES20
-import android.opengl.GLES30
-import android.view.Surface
-import com.swordfish.libretrodroid.GLRetroView
 import com.swordfish.libretrodroid.LibretroDroid
 import java.io.File
+import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
- * Records ONLY the game: the picture is copied from the game area of the GL surface right after
- * each frame is drawn (the touch buttons are separate views and never reach it), and the sound
- * is taken straight from the emulator. No screen-capture permission, works from Android 7.
+ * Records ONLY the game, without touching rendering: the emulator hands over each raw frame
+ * (e.g. 320x224), it is enlarged and encoded on our own threads, and the sound comes straight
+ * from the emulator. The game never waits for the encoder, the touch buttons are never in it,
+ * and it needs no permission. Works from Android 7.
+ *
+ * @param displayRatio shape of the console picture (4:3, Game Gear 10:9)
+ * @param lines video height (720 on strong phones, 480 otherwise)
  */
-class GameRecorder(private val view: GLRetroView, private val outFile: File) : GLRetroView.FrameSink {
+class GameRecorder(private val outFile: File, displayRatio: Float, lines: Int) {
+
+    private val encH = (lines / 16) * 16
+    private val encW = ((encH * displayRatio).toInt() / 16) * 16
 
     private val lock = Any()
     private lateinit var muxer: MediaMuxer
@@ -33,127 +32,120 @@ class GameRecorder(private val view: GLRetroView, private val outFile: File) : G
     private var audioTrack = -1
     private var expectAudio = true
 
-    // video (created on the GL thread at the first frame, once the game size is known)
-    private var videoCodec: MediaCodec? = null
-    private var inputSurface: Surface? = null
-    private var eglSurface: EGLSurface? = null
-    private var encW = 0
-    private var encH = 0
-    @Volatile private var glFailed: String? = null
-
-    // audio
+    private lateinit var videoCodec: MediaCodec
     private var audioCodec: MediaCodec? = null
     private var sampleRate = 44_100
 
     @Volatile private var running = false
+    @Volatile private var stopAt = 0L
     private val workers = mutableListOf<Thread>()
     private var startNs = 0L
-
-    /** Reason recording could not run on this device, if any. */
-    val failure: String? get() = glFailed
 
     fun start() {
         muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         startNs = System.nanoTime()
+
+        val vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encW, encH).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(MediaFormat.KEY_BIT_RATE, if (encH >= 720) 8_000_000 else 5_000_000)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+        }
+        videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        videoCodec.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        videoCodec.start()
+
         expectAudio = runCatching { setupAudio() }.isSuccess
+
         running = true
+        LibretroDroid.setVideoCapture(true)
+        workers += thread(name = "rec-video") { videoLoop() }
         if (expectAudio) {
             LibretroDroid.setAudioCapture(true)
             workers += thread(name = "rec-audio") { audioLoop() }
         }
-        view.frameSink = this
     }
 
-    // ------------------------------------------------------------ video (GL thread)
+    // ------------------------------------------------------------ video
 
-    override fun onFrameDrawn(surfaceWidth: Int, surfaceHeight: Int, gameBounds: FloatArray) {
-        if (!running || glFailed != null || surfaceWidth <= 0 || surfaceHeight <= 0) return
-
-        val gx = (gameBounds[0] * surfaceWidth).toInt().coerceIn(0, surfaceWidth - 1)
-        val gy = (gameBounds[1] * surfaceHeight).toInt().coerceIn(0, surfaceHeight - 1)
-        val gw = ((gameBounds[2] - gameBounds[0]) * surfaceWidth).toInt().coerceIn(1, surfaceWidth - gx)
-        val gh = ((gameBounds[3] - gameBounds[1]) * surfaceHeight).toInt().coerceIn(1, surfaceHeight - gy)
-
-        val display = EGL14.eglGetCurrentDisplay()
-        val context = EGL14.eglGetCurrentContext()
-        val windowDraw = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)
-        val windowRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ)
-
-        if (eglSurface == null) {
-            val version = GLES20.glGetString(GLES20.GL_VERSION).orEmpty()
-            if (!version.contains("OpenGL ES 3")) { glFailed = "gles2"; return }
-            setupVideo(gw, gh)
-            eglSurface = createEncoderSurface(display, context) ?: run { glFailed = "egl"; return }
-            workers += thread(name = "rec-video") { drainVideo() }
-        }
-
-        // Draw into the encoder, read from the window's freshly drawn back buffer.
-        if (!EGL14.eglMakeCurrent(display, eglSurface, windowRead, context)) { glFailed = "makeCurrent"; return }
-        GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 0)
-        GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0)
-        GLES20.glViewport(0, 0, encW, encH)
-        GLES30.glBlitFramebuffer(gx, gy, gx + gw, gy + gh, 0, 0, encW, encH, GLES20.GL_COLOR_BUFFER_BIT, GLES20.GL_LINEAR)
-        EGLExt.eglPresentationTimeANDROID(display, eglSurface, System.nanoTime())
-        EGL14.eglSwapBuffers(display, eglSurface)
-        EGL14.eglMakeCurrent(display, windowDraw, windowRead, context)
-    }
-
-    private fun setupVideo(gameW: Int, gameH: Int) {
-        // Up to 720 lines, keep the game's shape, sizes multiple of 16 for every encoder.
-        val scale = minOf(1f, 720f / gameH)
-        encW = maxOf(16, ((gameW * scale).toInt() / 16) * 16)
-        encH = maxOf(16, ((gameH * scale).toInt() / 16) * 16)
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encW, encH).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        }
-        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        inputSurface = codec.createInputSurface()
-        codec.start()
-        videoCodec = codec
-    }
-
-    private fun createEncoderSurface(display: android.opengl.EGLDisplay, context: android.opengl.EGLContext): EGLSurface? {
-        val id = IntArray(1)
-        EGL14.eglQueryContext(display, context, EGL14.EGL_CONFIG_ID, id, 0)
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val count = IntArray(1)
-        EGL14.eglChooseConfig(display, intArrayOf(EGL14.EGL_CONFIG_ID, id[0], EGL14.EGL_NONE), 0, configs, 0, 1, count, 0)
-        val config = configs[0] ?: return null
-        val surface = EGL14.eglCreateWindowSurface(display, config, inputSurface, intArrayOf(EGL14.EGL_NONE), 0)
-        return surface.takeIf { it != EGL14.EGL_NO_SURFACE }
-    }
-
-    private fun releaseGl() {
-        val display = EGL14.eglGetCurrentDisplay()
-        eglSurface?.let { if (display != EGL14.EGL_NO_DISPLAY) EGL14.eglDestroySurface(display, it) }
-        eglSurface = null
-    }
-
-    private fun drainVideo() {
-        val codec = videoCodec ?: return
+    private fun videoLoop() {
+        val frameSize = encW * encH * 3 / 2
+        val direct = ByteBuffer.allocateDirect(frameSize)
+        val yuv = ByteArray(frameSize)
         val info = MediaCodec.BufferInfo()
-        var stopAt = 0L
+        var lastSeq = -1L
+        var eosQueued = false
+
         while (true) {
-            if (!running) {
-                if (stopAt == 0L) stopAt = System.nanoTime()
-                if (System.nanoTime() - stopAt > 3_000_000_000L) break
-            }
-            val index = try { codec.dequeueOutputBuffer(info, 10_000) } catch (e: Exception) { break }
-            when {
-                index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(lock) {
-                    videoTrack = muxer.addTrack(codec.outputFormat); maybeStartMuxer()
+            // 1) feed the newest game frame
+            if (!eosQueued) {
+                if (!running) {
+                    val idx = try { videoCodec.dequeueInputBuffer(10_000) } catch (e: Exception) { break }
+                    if (idx >= 0) {
+                        videoCodec.queueInputBuffer(idx, 0, 0, System.nanoTime() / 1000, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        eosQueued = true
+                    }
+                } else {
+                    val seq = LibretroDroid.readCapturedFrameI420(direct, encW, encH)
+                    if (seq >= 0 && seq != lastSeq) {
+                        val idx = try { videoCodec.dequeueInputBuffer(5_000) } catch (e: Exception) { break }
+                        if (idx >= 0) {
+                            lastSeq = seq
+                            direct.rewind(); direct.get(yuv); direct.rewind()
+                            val image = videoCodec.getInputImage(idx)
+                            if (image != null) {
+                                fillImage(image, yuv)
+                                videoCodec.queueInputBuffer(idx, 0, frameSize, System.nanoTime() / 1000, 0)
+                            } else {
+                                videoCodec.queueInputBuffer(idx, 0, 0, System.nanoTime() / 1000, 0)
+                            }
+                        }
+                    } else {
+                        Thread.sleep(3)
+                    }
                 }
-                index >= 0 -> {
-                    val buf = codec.getOutputBuffer(index)
+            } else if (System.nanoTime() - stopAt > 3_000_000_000L) break // safety
+
+            // 2) collect encoded output
+            var out = try { videoCodec.dequeueOutputBuffer(info, 0) } catch (e: Exception) { break }
+            while (out != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    synchronized(lock) { videoTrack = muxer.addTrack(videoCodec.outputFormat); maybeStartMuxer() }
+                } else if (out >= 0) {
+                    val buf = videoCodec.getOutputBuffer(out)
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
                     if (buf != null) write(videoTrack, buf, info)
-                    codec.releaseOutputBuffer(index, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                    videoCodec.releaseOutputBuffer(out, false)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
+                out = try { videoCodec.dequeueOutputBuffer(info, 0) } catch (e: Exception) { return }
+            }
+        }
+    }
+
+    /** Copies an I420 frame into the encoder's image, whatever its plane layout (planar or NV12). */
+    private fun fillImage(image: Image, yuv: ByteArray) {
+        val planes = image.planes
+        val cw = encW / 2; val ch = encH / 2
+        copyPlane(yuv, 0, encW, encH, planes[0])
+        copyPlane(yuv, encW * encH, cw, ch, planes[1])
+        copyPlane(yuv, encW * encH + cw * ch, cw, ch, planes[2])
+    }
+
+    private fun copyPlane(src: ByteArray, offset: Int, w: Int, h: Int, plane: Image.Plane) {
+        val dst = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        if (pixelStride == 1) {
+            for (row in 0 until h) {
+                dst.position(row * rowStride)
+                dst.put(src, offset + row * w, w)
+            }
+        } else {
+            for (row in 0 until h) {
+                val base = row * rowStride
+                val s = offset + row * w
+                for (col in 0 until w) dst.put(base + col * pixelStride, src[s + col])
             }
         }
     }
@@ -211,7 +203,8 @@ class GameRecorder(private val view: GLRetroView, private val outFile: File) : G
                 } else {
                     Thread.sleep(5)
                 }
-            }
+            } else if (System.nanoTime() - stopAt > 3_000_000_000L) break // safety
+
             var out = try { codec.dequeueOutputBuffer(info, 0) } catch (e: Exception) { break }
             while (out != MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -236,7 +229,7 @@ class GameRecorder(private val view: GLRetroView, private val outFile: File) : G
         }
     }
 
-    private fun write(track: Int, buffer: java.nio.ByteBuffer, info: MediaCodec.BufferInfo) {
+    private fun write(track: Int, buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
         synchronized(lock) {
             if (!muxerStarted || track < 0 || info.size <= 0) return
             buffer.position(info.offset)
@@ -247,20 +240,13 @@ class GameRecorder(private val view: GLRetroView, private val outFile: File) : G
 
     /** Stops and finalizes the MP4. Returns true when a playable file was written. */
     fun stop(): Boolean {
-        view.frameSink = null
+        stopAt = System.nanoTime()
         running = false
+        LibretroDroid.setVideoCapture(false)
         LibretroDroid.setAudioCapture(false)
-
-        // EGL objects belong to the GL thread.
-        val latch = CountDownLatch(1)
-        view.queueEvent { try { releaseGl() } finally { latch.countDown() } }
-        latch.await(2, TimeUnit.SECONDS)
-
-        runCatching { videoCodec?.signalEndOfInputStream() }
         workers.forEach { it.join(4_000) }
         runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
-        runCatching { videoCodec?.stop() }; runCatching { videoCodec?.release() }
-        runCatching { inputSurface?.release() }
+        runCatching { videoCodec.stop() }; runCatching { videoCodec.release() }
         val ok = synchronized(lock) {
             val started = muxerStarted
             if (started) runCatching { muxer.stop() }

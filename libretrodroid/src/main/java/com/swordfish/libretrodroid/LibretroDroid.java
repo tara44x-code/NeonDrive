@@ -105,6 +105,8 @@ public class LibretroDroid {
     public static native void setAudioCapture(boolean enabled);
     public static native int readCapturedAudio(short[] buffer);
     public static native int getCoreSampleRate();
+    public static native void setVideoCapture(boolean enabled);
+    public static native long readCapturedFrameI420(java.nio.ByteBuffer directBuffer, int width, int height);
     public static native float[] getForegroundBounds();
 
     public static native void onSurfaceCreated();

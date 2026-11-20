@@ -529,6 +529,9 @@ void LibretroDroid::handleVideoRefresh(
     unsigned int height,
     size_t pitch
 ) {
+    if (videoCaptureEnabled && data != nullptr && data != RETRO_HW_FRAME_BUFFER_VALID) {
+        captureVideoFrame(data, width, height, pitch);
+    }
     if (video) {
         video->onNewFrame(data, width, height, pitch);
 
@@ -567,6 +570,75 @@ int LibretroDroid::readCapturedAudio(int16_t* out, int maxSamples) {
     std::copy(captureBuffer.begin(), captureBuffer.begin() + n, out);
     captureBuffer.erase(captureBuffer.begin(), captureBuffer.begin() + n);
     return n;
+}
+
+void LibretroDroid::setVideoCapture(bool enabled) {
+    std::lock_guard<std::mutex> lock(videoCaptureMutex);
+    videoCaptureEnabled = enabled;
+    if (!enabled) { captureFrame.clear(); captureFrame.shrink_to_fit(); captureW = captureH = 0; }
+}
+
+// Copies one emulator frame (any libretro pixel format) as 0x00RRGGBB. Runs on the emulation thread,
+// only a few hundred KB per frame, so it never slows the game.
+void LibretroDroid::captureVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch) {
+    std::lock_guard<std::mutex> lock(videoCaptureMutex);
+    if (width == 0 || height == 0) return;
+    captureW = (int) width; captureH = (int) height;
+    captureFrame.resize((size_t) width * height);
+    int format = Environment::getInstance().getPixelFormat();
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    for (unsigned y = 0; y < height; y++) {
+        const uint8_t* row = src + y * pitch;
+        uint32_t* out = &captureFrame[(size_t) y * width];
+        if (format == RETRO_PIXEL_FORMAT_XRGB8888) {
+            const uint32_t* p = reinterpret_cast<const uint32_t*>(row);
+            for (unsigned x = 0; x < width; x++) out[x] = p[x] & 0x00FFFFFF;
+        } else if (format == RETRO_PIXEL_FORMAT_RGB565) {
+            const uint16_t* p = reinterpret_cast<const uint16_t*>(row);
+            for (unsigned x = 0; x < width; x++) {
+                uint16_t v = p[x];
+                uint32_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
+                out[x] = ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
+            }
+        } else { // 0RGB1555
+            const uint16_t* p = reinterpret_cast<const uint16_t*>(row);
+            for (unsigned x = 0; x < width; x++) {
+                uint16_t v = p[x];
+                uint32_t r = (v >> 10) & 0x1F, g = (v >> 5) & 0x1F, b = v & 0x1F;
+                out[x] = ((r << 3 | r >> 2) << 16) | ((g << 3 | g >> 2) << 8) | (b << 3 | b >> 2);
+            }
+        }
+    }
+    captureSeq++;
+}
+
+int64_t LibretroDroid::readCapturedFrameI420(uint8_t* dst, int dstW, int dstH) {
+    std::vector<uint32_t> frame;
+    int w, h;
+    int64_t seq;
+    {
+        std::lock_guard<std::mutex> lock(videoCaptureMutex);
+        if (captureFrame.empty() || captureW == 0 || captureH == 0) return -1;
+        frame = captureFrame; w = captureW; h = captureH; seq = captureSeq;
+    }
+    uint8_t* yPlane = dst;
+    uint8_t* uPlane = dst + dstW * dstH;
+    uint8_t* vPlane = uPlane + (dstW / 2) * (dstH / 2);
+    for (int y = 0; y < dstH; y++) {
+        const uint32_t* srcRow = &frame[(size_t) ((int64_t) y * h / dstH) * w];
+        uint8_t* yRow = yPlane + y * dstW;
+        for (int x = 0; x < dstW; x++) {
+            uint32_t c = srcRow[(int64_t) x * w / dstW];
+            int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+            yRow[x] = (uint8_t) (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+            if ((y & 1) == 0 && (x & 1) == 0) {
+                int i = (y / 2) * (dstW / 2) + (x / 2);
+                uPlane[i] = (uint8_t) (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+                vPlane[i] = (uint8_t) (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+            }
+        }
+    }
+    return seq;
 }
 
 std::array<float, 4> LibretroDroid::getForegroundBounds() {
