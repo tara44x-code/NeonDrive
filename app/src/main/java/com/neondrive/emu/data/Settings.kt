@@ -15,10 +15,20 @@ enum class VideoFilter(val label: String) {
 /** How the picture fills the phone screen. [ratio] = forced display ratio (null = engine decides). */
 enum class AspectMode(val label: String, val ratio: Float?) {
     ORIGINAL("أصلي", null),
+    INTEGER("بكسل مثالي", null),          // whole-number scaling: every console line = N screen lines
     STRETCH_16_9("تمدد 16:9", 16f / 9f),
     STRETCH_16_10("16:10", 16f / 10f),
     STRETCH_3_2("3:2", 3f / 2f),
     FULL("ملء الشاشة", null),
+}
+
+/** Colour output of the console's video chip, done by the engine itself (blargg NTSC filter). */
+enum class ColorMode(val label: String, val coreValue: String) {
+    ORIGINAL("أصلية نقية", "disabled"),
+    RGB("كيبل RGB", "rgb"),
+    SVIDEO("S-Video", "svideo"),
+    COMPOSITE("تلفزيون Composite", "composite"),
+    MONO("أبيض وأسود", "monochrome"),
 }
 
 enum class TouchMode(val label: String) {
@@ -72,6 +82,20 @@ class Settings(context: Context) {
     var rewind: Boolean?
         get() = if (p.contains("rewind")) p.getBoolean("rewind", true) else null
         set(v) { if (v == null) p.edit().remove("rewind").apply() else p.edit().putBoolean("rewind", v).apply() }
+
+    var colorMode: ColorMode
+        get() = runCatching { ColorMode.valueOf(p.getString("color", "ORIGINAL")!!) }.getOrDefault(ColorMode.ORIGINAL)
+        set(v) = p.edit().putString("color", v.name).apply()
+
+    /** Removes the console's sprite limit: less flicker when many objects are on screen. */
+    var noSpriteLimit: Boolean
+        get() = p.getBoolean("noSpriteLimit", false)
+        set(v) = p.edit().putBoolean("noSpriteLimit", v).apply()
+
+    /** Game Gear LCD ghosting, like the real handheld screen. */
+    var ggLcd: Boolean
+        get() = p.getBoolean("ggLcd", false)
+        set(v) = p.edit().putBoolean("ggLcd", v).apply()
 
     var autoResume: Boolean
         get() = p.getBoolean("autoResume", true)

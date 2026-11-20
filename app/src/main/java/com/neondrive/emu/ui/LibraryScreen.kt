@@ -108,7 +108,7 @@ private fun Header(vm: LibraryViewModel, onOpenSettings: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("NeonDrive", style = Neon.glowText)
                 Text("محاكي سيكا الاحترافي", color = Neon.TextDim, fontSize = 13.sp)
-                Text("تطوير: مهند سات لنك", color = Neon.Magenta, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                DeveloperBadge(height = 38.dp)
             }
             IconButton(onClick = vm::rescanAll) { Icon(Icons.Default.Refresh, "إعادة الفحص", tint = Neon.Cyan) }
             IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Tune, "الإعدادات", tint = Neon.Magenta) }

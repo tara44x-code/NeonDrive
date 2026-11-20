@@ -44,6 +44,7 @@ import com.neondrive.emu.data.Game
 import com.neondrive.emu.data.Settings
 import com.neondrive.emu.data.VideoFilter
 import com.neondrive.emu.data.AspectMode
+import com.neondrive.emu.data.ColorMode
 import com.neondrive.emu.ui.Neon
 import com.neondrive.emu.ui.NeonChip
 import com.neondrive.emu.ui.NeonPanel
@@ -63,6 +64,7 @@ class GameMenuActivity : ComponentActivity() {
         const val RES_CHEATS_CHANGED = "cheats"
         const val RES_FILTER_CHANGED = "filter"
         const val RES_ASPECT_CHANGED = "aspect"
+        const val RES_IMAGE_CHANGED = "image"
         const val ACTION_SAVE = "save"
         const val ACTION_LOAD = "load"
         const val ACTION_RESET = "reset"
@@ -80,6 +82,7 @@ class GameMenuActivity : ComponentActivity() {
     private var cheatsChanged = false
     private var filterChanged = false
     private var aspectChanged = false
+    private var imageChanged = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -113,6 +116,7 @@ class GameMenuActivity : ComponentActivity() {
             putExtra(RES_CHEATS_CHANGED, cheatsChanged)
             putExtra(RES_FILTER_CHANGED, filterChanged)
             putExtra(RES_ASPECT_CHANGED, aspectChanged)
+            putExtra(RES_IMAGE_CHANGED, imageChanged)
         })
     }
 
@@ -124,6 +128,8 @@ class GameMenuActivity : ComponentActivity() {
     private fun MainPage(onCheats: () -> Unit) {
         var filter by remember { mutableStateOf(settings.filter) }
         var aspect by remember { mutableStateOf(settings.aspect) }
+        var colorMode by remember { mutableStateOf(settings.colorMode) }
+        var noFlicker by remember { mutableStateOf(settings.noSpriteLimit) }
         val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
 
         Column(
@@ -164,6 +170,18 @@ class GameMenuActivity : ComponentActivity() {
                     NeonChip(a.label, a == aspect) {
                         aspect = a; settings.aspect = a; aspectChanged = true; setResultFor(null)
                     }
+                }
+            }
+
+            Text("ألوان الجهاز", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ColorMode.entries.forEach { c ->
+                    NeonChip(c.label, c == colorMode) {
+                        colorMode = c; settings.colorMode = c; imageChanged = true; setResultFor(null)
+                    }
+                }
+                NeonChip(if (noFlicker) "إزالة الوميض ✓" else "إزالة الوميض", noFlicker) {
+                    noFlicker = !noFlicker; settings.noSpriteLimit = noFlicker; imageChanged = true; setResultFor(null)
                 }
             }
 

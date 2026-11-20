@@ -57,6 +57,8 @@ import com.neondrive.emu.ui.NeonTheme
 import com.swordfish.libretrodroid.GLRetroView
 import com.swordfish.libretrodroid.GLRetroViewData
 import com.swordfish.libretrodroid.LibretroDroid
+import com.swordfish.libretrodroid.Variable
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -169,6 +171,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             rumbleEventsEnabled = false
             preferLowLatencyAudio = true
             skipDuplicateFrames = profile.skipDuplicateFrames
+            variables = coreVariables()
         }
         retroView = GLRetroView(this, data)
         lifecycle.addObserver(retroView)
@@ -193,6 +196,19 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
     }
 
+    /** Engine options for picture quality, taken from Settings. */
+    private fun coreVariables(): Array<Variable> = arrayOf(
+        Variable("genesis_plus_gx_blargg_ntsc_filter", settings.colorMode.coreValue),
+        Variable("genesis_plus_gx_no_sprite_limit", if (settings.noSpriteLimit) "enabled" else "disabled"),
+        Variable("genesis_plus_gx_lcd_filter", if (settings.ggLcd) "enabled" else "disabled"),
+    )
+
+    /** Console picture height in lines and display ratio, for pixel-perfect (integer) scaling. */
+    private val nativeLines: Int get() = when (game.system) {
+        GameSystem.GENESIS -> 224; GameSystem.GAME_GEAR -> 144; else -> 192
+    }
+    private val nativeRatio: Float get() = if (game.system == GameSystem.GAME_GEAR) 10f / 9f else 4f / 3f
+
     // ---------- Screen ----------
 
     @Composable
@@ -203,11 +219,22 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             TouchMode.HIDDEN -> false
         }
 
-        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             val ratio = aspect.ratio
-            val viewModifier = if (ratio != null)
-                Modifier.fillMaxHeight().aspectRatio(ratio, matchHeightConstraintsFirst = true)
-            else Modifier.fillMaxSize()
+            val density = LocalDensity.current
+            val viewModifier = when {
+                aspect == AspectMode.INTEGER -> {
+                    // Largest whole multiple of the console's lines that fits the screen.
+                    val maxH = constraints.maxHeight; val maxW = constraints.maxWidth
+                    var k = (maxH / nativeLines).coerceAtLeast(1)
+                    while (k > 1 && k * nativeLines * nativeRatio > maxW) k--
+                    val hPx = k * nativeLines
+                    val wPx = (hPx * nativeRatio).toInt()
+                    with(density) { Modifier.size(wPx.toDp(), hPx.toDp()) }
+                }
+                ratio != null -> Modifier.fillMaxHeight().aspectRatio(ratio, matchHeightConstraintsFirst = true)
+                else -> Modifier.fillMaxSize()
+            }
 
             AndroidView(
                 factory = { retroView },
@@ -265,7 +292,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         if (appliedAspect == mode) return
         appliedAspect = mode
         val holder = retroView.holder
-        if (mode == AspectMode.ORIGINAL) {
+        if (mode == AspectMode.ORIGINAL || mode == AspectMode.INTEGER) {
             holder.setSizeFromLayout()
         } else {
             val native = when (game.system) { GameSystem.GAME_GEAR -> 10f / 9f; else -> 4f / 3f }
@@ -480,6 +507,10 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 return
             }
             aspect = newAspect
+        }
+        if (data.getBooleanExtra(GameMenuActivity.RES_IMAGE_CHANGED, false)) {
+            CrashReporter.crumb("image options: color=${settings.colorMode} noFlicker=${settings.noSpriteLimit}")
+            lifecycleScope.launch(Dispatchers.Default + safe) { retroView.updateVariables(*coreVariables()) }
         }
         if (data.getBooleanExtra(GameMenuActivity.RES_CHEATS_CHANGED, false)) {
             lifecycleScope.launch(safe) {

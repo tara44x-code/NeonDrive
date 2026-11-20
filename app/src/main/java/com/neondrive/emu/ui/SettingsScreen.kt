@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.neondrive.emu.data.VideoFilter
 import com.neondrive.emu.data.AspectMode
+import com.neondrive.emu.data.ColorMode
 import com.neondrive.emu.data.TouchMode
 import com.neondrive.emu.game.ControllerSetupActivity
 import android.content.Intent
@@ -38,6 +39,9 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
     var filter by remember { mutableStateOf(s.filter) }
     var aspect by remember { mutableStateOf(s.aspect) }
     var touchMode by remember { mutableStateOf(s.touchMode) }
+    var colorMode by remember { mutableStateOf(s.colorMode) }
+    var noFlicker by remember { mutableStateOf(s.noSpriteLimit) }
+    var ggLcd by remember { mutableStateOf(s.ggLcd) }
     val context = LocalContext.current
     var six by remember { mutableStateOf(s.sixButtonPad) }
     var rewind by remember { mutableStateOf(s.rewind ?: (vm.profile?.rewindByDefault ?: true)) }
@@ -92,6 +96,22 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             )
             FlowRowCompat {
                 AspectMode.entries.forEach { a -> NeonChip(a.label, aspect == a) { aspect = a; s.aspect = a } }
+            }
+            Text("بكسل مثالي = كل سطر باللعبة ياخذ نفس عدد الأسطر بالشاشة بالضبط: أوضح صورة ممكنة. أحلى ويا فلتر \"حاد ناعم\".",
+                color = Neon.TextDim, fontSize = 11.sp)
+
+            Spacer(Modifier.height(8.dp))
+            Text("ألوان الجهاز", color = Neon.Text, fontSize = 14.sp)
+            Text("أصلية نقية = نفس ألوان اللعبة بالضبط • Composite = مثل التلفزيون القديم، ويرجّع الشفافيات اللي صممتها بعض الألعاب (مثل الشلالات). الأوضاع غير الأصلية تجريبية.",
+                color = Neon.TextDim, fontSize = 11.sp)
+            FlowRowCompat {
+                ColorMode.entries.forEach { c -> NeonChip(c.label, colorMode == c) { colorMode = c; s.colorMode = c } }
+            }
+            Toggle("إزالة الوميض", "يلغي حد الأشكال بالشاشة فتختفي الرمشة لما تكثر الأعداء (قد تتأثر لعبة نادرة)", noFlicker) {
+                noFlicker = it; s.noSpriteLimit = it
+            }
+            Toggle("شاشة Game Gear الأصلية", "أثر الحركة الناعم مثل شاشة الجهاز المحمول", ggLcd) {
+                ggLcd = it; s.ggLcd = it
             }
         }
 
@@ -154,7 +174,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
         }
 
         Section("حول") {
-            Text("تطوير: مهند سات لنك", color = Neon.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            DeveloperBadge(Modifier.fillMaxWidth(), height = 64.dp)
         }
     }
 }
