@@ -32,6 +32,8 @@ namespace libretrodroid {
 
 class Video {
 public:
+    /** NeonDrive: game area on screen, 0..1, bottom-left origin: xMin, yMin, xMax, yMax. */
+    std::array<float, 4> getForegroundBounds() { return videoLayout.getRelativeForegroundBounds(); }
 
     struct RenderingOptions {
         bool hardwareAccelerated = false;

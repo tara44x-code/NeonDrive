@@ -542,7 +542,36 @@ size_t LibretroDroid::handleAudioCallback(const int16_t *data, size_t frames) {
     if (audio && audioEnabled) {
         audio->write(data, frames);
     }
+    if (captureEnabled) {
+        std::lock_guard<std::mutex> lock(captureMutex);
+        captureBuffer.insert(captureBuffer.end(), data, data + frames * 2);
+        size_t maxSamples = (size_t) coreSampleRate * 2 * 3;   // keep at most ~3 s
+        if (captureBuffer.size() > maxSamples) {
+            captureBuffer.erase(captureBuffer.begin(), captureBuffer.begin() + (captureBuffer.size() - maxSamples));
+        }
+    }
     return frames;
+}
+
+void LibretroDroid::setAudioCapture(bool enabled) {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    captureEnabled = enabled;
+    captureBuffer.clear();
+}
+
+int LibretroDroid::readCapturedAudio(int16_t* out, int maxSamples) {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    int n = std::min((int) captureBuffer.size(), maxSamples);
+    n -= n % 2;   // whole stereo frames
+    if (n <= 0) return 0;
+    std::copy(captureBuffer.begin(), captureBuffer.begin() + n, out);
+    captureBuffer.erase(captureBuffer.begin(), captureBuffer.begin() + n);
+    return n;
+}
+
+std::array<float, 4> LibretroDroid::getForegroundBounds() {
+    if (!video) return { 0.0F, 0.0F, 1.0F, 1.0F };
+    return video->getForegroundBounds();
 }
 
 int16_t LibretroDroid::handleSetInputState(
@@ -606,6 +635,7 @@ void LibretroDroid::afterGameLoad() {
     core->retro_get_system_av_info(&system_av_info);
 
     fpsSync = std::make_unique<FPSSync>(system_av_info.timing.fps, screenRefreshRate);
+    coreSampleRate = (int) std::lround(system_av_info.timing.sample_rate);
 
     double inputSampleRate = system_av_info.timing.sample_rate * fpsSync->getTimeStretchFactor();
 

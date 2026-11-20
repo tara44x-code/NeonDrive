@@ -130,6 +130,12 @@ public:
 
     void setAudioEnabled(bool enabled);
 
+    // NeonDrive: game-only recording (sound copy + game rectangle)
+    void setAudioCapture(bool enabled);
+    int readCapturedAudio(int16_t* out, int maxSamples);
+    int getCoreSampleRate() const { return coreSampleRate; }
+    std::array<float, 4> getForegroundBounds();
+
     void setShaderConfig(ShaderManager::Config shaderConfig);
 
     void setViewportAlignment(unsigned int viewportAlignment);
@@ -156,6 +162,11 @@ protected:
     static void callback_retro_set_input_poll();
 
 private:
+    std::mutex captureMutex;
+    std::vector<int16_t> captureBuffer;
+    bool captureEnabled = false;
+    int coreSampleRate = 44100;
+
     unsigned int frameSpeed = 1;
     bool audioEnabled = true;
     bool preferLowLatencyAudio = false;

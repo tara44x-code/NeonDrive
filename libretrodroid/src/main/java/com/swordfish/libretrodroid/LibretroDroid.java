@@ -101,6 +101,12 @@ public class LibretroDroid {
     public static native void loadGameFromVirtualFiles(List<DetachedVirtualFile> virtualFiles);
     public static native void resume();
 
+    // NeonDrive: game-only recording
+    public static native void setAudioCapture(boolean enabled);
+    public static native int readCapturedAudio(short[] buffer);
+    public static native int getCoreSampleRate();
+    public static native float[] getForegroundBounds();
+
     public static native void onSurfaceCreated();
     public static native void onSurfaceChanged(int width, int height);
 

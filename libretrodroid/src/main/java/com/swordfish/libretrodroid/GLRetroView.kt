@@ -315,10 +315,26 @@ class GLRetroView(
         }
     }
 
+    /**
+     * NeonDrive: receives each frame right after it is drawn, on the GL thread, while the
+     * window's back buffer still holds it (before the UI overlay and before the swap).
+     */
+    fun interface FrameSink {
+        fun onFrameDrawn(surfaceWidth: Int, surfaceHeight: Int, gameBounds: FloatArray)
+    }
+
+    @Volatile var frameSink: FrameSink? = null
+    @Volatile private var surfaceWidth = 0
+    @Volatile private var surfaceHeight = 0
+
     inner class Renderer : GLSurfaceView.Renderer {
         override fun onDrawFrame(gl: GL10) = catchExceptions {
             if (isEmulationReady) {
                 LibretroDroid.step(this@GLRetroView)
+                frameSink?.let { sink ->
+                    try { sink.onFrameDrawn(surfaceWidth, surfaceHeight, LibretroDroid.getForegroundBounds()) }
+                    catch (e: Throwable) { android.util.Log.e("NeonDrive", "frame sink failed", e) }
+                }
                 lifecycle?.coroutineScope?.launch {
                     retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
                 }
@@ -327,6 +343,8 @@ class GLRetroView(
 
         override fun onSurfaceChanged(gl: GL10, width: Int, height: Int) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
+            surfaceWidth = width
+            surfaceHeight = height
             LibretroDroid.onSurfaceChanged(width, height)
         }
 

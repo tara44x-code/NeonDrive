@@ -36,9 +36,16 @@ object MediaSaver {
         true
     }.getOrDefault(false)
 
-    /** Android 10+ only (recording itself needs Android 10). */
     fun saveVideo(context: Context, file: File, name: String): Boolean = runCatching {
-        if (Build.VERSION.SDK_INT < 29) return false
+        if (Build.VERSION.SDK_INT < 29) {
+            // Android 9 and older: copy into Movies/NeonDrive and let the gallery index it.
+            @Suppress("DEPRECATION")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "NeonDrive").apply { mkdirs() }
+            val target = File(dir, "$name.mp4")
+            file.copyTo(target, overwrite = true)
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf("video/mp4"), null)
+            return true
+        }
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, "$name.mp4")
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")

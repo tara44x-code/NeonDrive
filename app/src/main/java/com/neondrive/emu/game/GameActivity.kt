@@ -70,7 +70,6 @@ import org.json.JSONObject
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.view.PixelCopy
 import androidx.compose.ui.text.font.FontWeight
@@ -151,20 +150,22 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private var layout by mutableStateOf(ControlsLayout())
     private var selectedGroup by mutableStateOf<CtrlGroup?>(CtrlGroup.FACE)
     private var isRecording by mutableStateOf(false)
-    private var pendingAudio = true
+    private var recordStartMs by mutableStateOf(0L)
+    private var recorder: GameRecorder? = null
+    private var recordFile: File? = null
 
+    /** Android 9 and older: storage permission, then run what was asked. */
+    private var afterStoragePermission: (() -> Unit)? = null
     private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) takeScreenshot() else message = "يحتاج إذن التخزين حتى يحفظ الصورة"
+        val next = afterStoragePermission; afterStoragePermission = null
+        if (ok) next?.invoke() else message = "يحتاج إذن التخزين حتى يحفظ بالمعرض"
     }
-    private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        pendingAudio = ok
-        requestProjection()
-    }
-    private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-        val data = r.data
-        if (r.resultCode == Activity.RESULT_OK && data != null && Build.VERSION.SDK_INT >= 29) {
-            RecordService.start(this, r.resultCode, data, pendingAudio)
-        } else message = "تم إلغاء التسجيل"
+
+    private fun withStorage(action: () -> Unit) {
+        if (MediaSaver.needsLegacyPermission(this)) {
+            afterStoragePermission = action
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else action()
     }
 
     private val menuLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -186,10 +187,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         padMap = settings.padMap
         layout = settings.layout(game.system)
         wideCore = usesWideCore(settings, game)
-        if (Build.VERSION.SDK_INT >= 29) {
-            lifecycleScope.launch { RecordService.recording.collect { isRecording = it } }
-            lifecycleScope.launch { RecordService.events.collect { message = it } }
-        }
+
 
         val savesDir = File(filesDir, "saves").apply { mkdirs() }
         val systemDir = File(filesDir, "system").apply { mkdirs() }
@@ -321,6 +319,8 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.Default.Menu, "القائمة", tint = Neon.Cyan, modifier = Modifier.size(18.dp)) }
             }
+
+            if (isRecording) RecordingBadge(Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 14.dp))
 
             message?.let {
                 Text(
@@ -634,7 +634,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     }
 
     private fun takeScreenshot() {
-        if (MediaSaver.needsLegacyPermission(this)) { storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE); return }
+        if (MediaSaver.needsLegacyPermission(this)) { withStorage { takeScreenshot() }; return }
         lifecycleScope.launch(safe) {
             val frame = grabFrame() ?: run { message = "تعذر أخذ اللقطة"; return@launch }
             saveScreenshot(frame)
@@ -642,7 +642,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     }
 
     private fun saveScreenshot(frame: Bitmap) {
-        if (MediaSaver.needsLegacyPermission(this)) { storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE); return }
+        if (MediaSaver.needsLegacyPermission(this)) { withStorage { saveScreenshot(frame) }; return }
         lifecycleScope.launch(Dispatchers.IO + safe) {
             val name = "NeonDrive_" + TitleMatch.base(game.title).replace(Regex("[^A-Za-z0-9]+"), "_").take(40) + "_" + System.currentTimeMillis()
             val ok = MediaSaver.saveImage(this@GameActivity, frame, name)
@@ -652,19 +652,64 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     // ---------- Recording ----------
 
+    /** Records only the game picture + game sound (no touch buttons, no screen-capture prompt). */
     private fun toggleRecording() {
-        if (Build.VERSION.SDK_INT < 29) { message = "تسجيل الفيديو يحتاج أندرويد 10 أو أحدث"; return }
-        if (isRecording) { RecordService.stop(this); return }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            message = "اسمح بالصوت حتى يتسجل صوت اللعبة ويا الفيديو"
-            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
-        } else { pendingAudio = true; requestProjection() }
+        if (recorder != null) { stopRecording(); return }
+        if (!coreReady) return
+        if (MediaSaver.needsLegacyPermission(this)) { withStorage { toggleRecording() }; return }
+        val name = "NeonDrive_" + TitleMatch.base(game.title).replace(Regex("[^A-Za-z0-9]+"), "_").take(40) +
+            "_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        val file = File(cacheDir, "$name.mp4")
+        val rec = GameRecorder(retroView, file)
+        try { rec.start() } catch (e: Exception) {
+            CrashReporter.crumb("recording failed to start: ${e.message}")
+            message = "تعذر بدء التسجيل"; return
+        }
+        recorder = rec; recordFile = file
+        isRecording = true; recordStartMs = android.os.SystemClock.elapsedRealtime()
+        CrashReporter.crumb("recording started")
+        lifecycleScope.launch(safe) {
+            delay(1500)
+            rec.failure?.let { reason ->
+                stopRecording(save = false)
+                message = if (reason == "gles2") "كارت الشاشة بهذا الجهاز ما يدعم تسجيل اللعبة" else "تعذر التسجيل على هذا الجهاز"
+            }
+        }
     }
 
-    private fun requestProjection() {
-        if (Build.VERSION.SDK_INT < 29) return
-        val mpm = getSystemService(MediaProjectionManager::class.java)
-        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+    private fun stopRecording(save: Boolean = true) {
+        val rec = recorder ?: return
+        recorder = null
+        isRecording = false
+        val file = recordFile
+        lifecycleScope.launch(Dispatchers.IO + safe) {
+            val ok = rec.stop()
+            val saved = save && ok && file != null && MediaSaver.saveVideo(this@GameActivity, file, file.nameWithoutExtension)
+            file?.delete()
+            CrashReporter.crumb("recording stopped saved=$saved")
+            if (save) message = if (saved) "🎬 تم حفظ الفيديو بالمعرض (Movies/NeonDrive)" else "تعذر حفظ الفيديو"
+        }
+    }
+
+    /** Red dot + running time while recording (on screen only, never in the video). */
+    @Composable
+    private fun RecordingBadge(modifier: Modifier) {
+        var now by remember { mutableStateOf(android.os.SystemClock.elapsedRealtime()) }
+        LaunchedEffect(recordStartMs) {
+            while (true) { now = android.os.SystemClock.elapsedRealtime(); delay(500) }
+        }
+        val secs = ((now - recordStartMs) / 1000).coerceAtLeast(0)
+        var blink by remember { mutableStateOf(true) }
+        LaunchedEffect(Unit) { while (true) { delay(600); blink = !blink } }
+        Row(
+            modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.55f))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(10.dp).clip(CircleShape).background(if (blink) Color(0xFFFF3B3B) else Color(0x55FF3B3B)))
+            Spacer(Modifier.width(6.dp))
+            Text("%02d:%02d".format(secs / 60, secs % 60), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
     }
 
     // ---------- Touch layout editor ----------
@@ -718,6 +763,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     override fun onPause() {
         inputManager.unregisterInputDeviceListener(this)
+        if (isFinishing) stopRecording()
         super.onPause()
     }
 

@@ -90,7 +90,7 @@ add_library(libretrodroid SHARED
 )
 
 # NeonDrive: newer NDKs (27+) no longer include these transitively.
-foreach(hdr functional algorithm memory cstring)
+foreach(hdr functional algorithm memory cstring array vector mutex)
     target_compile_options(libretrodroid PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${hdr}>")
 endforeach()
 

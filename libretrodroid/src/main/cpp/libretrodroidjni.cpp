@@ -556,6 +556,44 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setRumbleE
     LibretroDroid::getInstance().setRumbleEnabled(enabled);
 }
 
+// ---- NeonDrive: game-only recording
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setAudioCapture(
+    JNIEnv* env,
+    jclass obj,
+    jboolean enabled
+) {
+    LibretroDroid::getInstance().setAudioCapture(enabled);
+}
+
+JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_readCapturedAudio(
+    JNIEnv* env,
+    jclass obj,
+    jshortArray buffer
+) {
+    jsize capacity = env->GetArrayLength(buffer);
+    jshort* data = env->GetShortArrayElements(buffer, nullptr);
+    int n = LibretroDroid::getInstance().readCapturedAudio(reinterpret_cast<int16_t*>(data), capacity);
+    env->ReleaseShortArrayElements(buffer, data, 0);
+    return n;
+}
+
+JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getCoreSampleRate(
+    JNIEnv* env,
+    jclass obj
+) {
+    return LibretroDroid::getInstance().getCoreSampleRate();
+}
+
+JNIEXPORT jfloatArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getForegroundBounds(
+    JNIEnv* env,
+    jclass obj
+) {
+    auto b = LibretroDroid::getInstance().getForegroundBounds();
+    jfloatArray result = env->NewFloatArray(4);
+    env->SetFloatArrayRegion(result, 0, 4, b.data());
+    return result;
+}
+
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setFrameSpeed(
     JNIEnv* env,
     jclass obj,
