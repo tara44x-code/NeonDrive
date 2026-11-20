@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "NeonDrive"
 include(":app")
+include(":libretrodroid")

@@ -37,6 +37,8 @@ data class DeviceProfile(
         VideoFilter.SHARP -> ShaderConfig.Sharp
         VideoFilter.SMOOTH -> ShaderConfig.CUT2()
         VideoFilter.ULTRA -> ShaderConfig.CUT3()
+        VideoFilter.XBRZ -> ShaderConfig.XBRZ
+        VideoFilter.XBR -> ShaderConfig.XBR
         VideoFilter.CRT -> ShaderConfig.CRT
         VideoFilter.LCD -> ShaderConfig.LCD
     }

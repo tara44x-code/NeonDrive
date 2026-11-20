@@ -8,6 +8,8 @@ enum class VideoFilter(val label: String) {
     SHARP("حاد ناعم"),
     SMOOTH("تنعيم ذكي (CUT2)"),
     ULTRA("دقة فائقة (CUT3)"),
+    XBRZ("xBRZ وضوح عالي"),
+    XBR("xBR ناعم"),
     CRT("شاشة CRT"),
     LCD("شاشة LCD"),
 }
@@ -82,6 +84,19 @@ class Settings(context: Context) {
     var rewind: Boolean?
         get() = if (p.contains("rewind")) p.getBoolean("rewind", true) else null
         set(v) { if (v == null) p.edit().remove("rewind").apply() else p.edit().putBoolean("rewind", v).apply() }
+
+    // ---- Picture adjustment (applied on top of any filter) ----
+    var brightness: Float
+        get() = p.getFloat("bright", 0f)
+        set(v) = p.edit().putFloat("bright", v).apply()
+    var contrast: Float
+        get() = p.getFloat("contrast", 1f)
+        set(v) = p.edit().putFloat("contrast", v).apply()
+    var saturation: Float
+        get() = p.getFloat("sat", 1f)
+        set(v) = p.edit().putFloat("sat", v).apply()
+
+    fun colorAdjust() = com.swordfish.libretrodroid.ColorAdjust(brightness, contrast, saturation)
 
     var colorMode: ColorMode
         get() = runCatching { ColorMode.valueOf(p.getString("color", "ORIGINAL")!!) }.getOrDefault(ColorMode.ORIGINAL)

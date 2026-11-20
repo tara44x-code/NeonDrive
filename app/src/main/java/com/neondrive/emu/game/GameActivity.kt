@@ -172,6 +172,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             preferLowLatencyAudio = true
             skipDuplicateFrames = profile.skipDuplicateFrames
             variables = coreVariables()
+            colorAdjust = settings.colorAdjust()
         }
         retroView = GLRetroView(this, data)
         lifecycle.addObserver(retroView)
@@ -511,6 +512,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         if (data.getBooleanExtra(GameMenuActivity.RES_IMAGE_CHANGED, false)) {
             CrashReporter.crumb("image options: color=${settings.colorMode} noFlicker=${settings.noSpriteLimit}")
             lifecycleScope.launch(Dispatchers.Default + safe) { retroView.updateVariables(*coreVariables()) }
+            retroView.colorAdjust = settings.colorAdjust()
         }
         if (data.getBooleanExtra(GameMenuActivity.RES_CHEATS_CHANGED, false)) {
             lifecycleScope.launch(safe) {

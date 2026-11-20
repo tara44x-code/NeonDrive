@@ -59,7 +59,7 @@ android {
 }
 
 dependencies {
-    implementation("com.github.swordfish90:libretrodroid:0.14.0")
+    implementation(project(":libretrodroid"))
 
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)

@@ -185,6 +185,9 @@ class GameMenuActivity : ComponentActivity() {
                 }
             }
 
+            Text("ضبط الصورة", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+            com.neondrive.emu.ui.PictureSliders(settings) { imageChanged = true; setResultFor(null) }
+
             Text("فلتر الصورة", color = Neon.Cyan, fontWeight = FontWeight.Bold)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 VideoFilter.entries.forEach { f ->

@@ -79,7 +79,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
         Section("الصورة والدقة") {
             val auto = vm.profile?.autoFilter?.label
             Text(
-                "التلقائي يختار الفلتر حسب المعالج وكارت الشاشة" + (auto?.let { " (جهازك: $it)" } ?: ""),
+                "xBRZ = أوضح صورة (حواف ناعمة وخطوط مستقيمة) • xBR = أنعم • التلقائي يختار حسب المعالج وكارت الشاشة" + (auto?.let { " (جهازك: $it)" } ?: ""),
                 color = Neon.TextDim, fontSize = 12.sp,
             )
             Spacer(Modifier.height(8.dp))
@@ -99,6 +99,10 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             }
             Text("بكسل مثالي = كل سطر باللعبة ياخذ نفس عدد الأسطر بالشاشة بالضبط: أوضح صورة ممكنة. أحلى ويا فلتر \"حاد ناعم\".",
                 color = Neon.TextDim, fontSize = 11.sp)
+
+            Spacer(Modifier.height(8.dp))
+            Text("ضبط الصورة", color = Neon.Text, fontSize = 14.sp)
+            PictureSliders(s)
 
             Spacer(Modifier.height(8.dp))
             Text("ألوان الجهاز", color = Neon.Text, fontSize = 14.sp)

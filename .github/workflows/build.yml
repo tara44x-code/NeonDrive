@@ -25,6 +25,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Fetch LibretroDroid native dependencies
+        run: bash scripts/fetch_libretrodroid_deps.sh
+
       - name: Download libretro cores
         run: bash scripts/fetch_cores.sh
 
