@@ -89,6 +89,11 @@ add_library(libretrodroid SHARED
         ${LIBRETRO_COMMON}
 )
 
+# NeonDrive: newer NDKs (27+) no longer include these transitively.
+foreach(hdr functional algorithm memory cstring)
+    target_compile_options(libretrodroid PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${hdr}>")
+endforeach()
+
 # Support 16k pages for Android 15
 target_link_options(libretrodroid PRIVATE "-Wl,-z,max-page-size=16384")
 
