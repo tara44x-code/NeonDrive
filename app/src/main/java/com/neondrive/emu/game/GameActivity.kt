@@ -67,6 +67,18 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.view.PixelCopy
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.neondrive.emu.data.MediaSaver
+import com.neondrive.emu.data.TitleMatch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import java.io.File
 
 class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
@@ -95,6 +107,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         fun usesWideCore(settings: Settings, game: Game) = false
 
         fun statesDir(context: Context) = File(context.filesDir, "states").apply { mkdirs() }
+
+        /** Thumbnail saved next to a state file. */
+        fun thumbFile(state: File) = File(state.path + ".png")
 
         /** States from the normal and the widescreen core are not compatible, so they are stored apart. */
         fun stateFile(context: Context, game: Game, slot: Int, wide: Boolean = usesWideCore(Settings(context), game)) =
@@ -130,6 +145,28 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         message = "خطأ داخلي: ${e::class.java.simpleName}"
     }
 
+    // ---- capture / editor / recording state
+    private var pendingFrame: Bitmap? = null            // frame grabbed the moment the menu opened
+    private var editingLayout by mutableStateOf(false)
+    private var layout by mutableStateOf(ControlsLayout())
+    private var selectedGroup by mutableStateOf<CtrlGroup?>(CtrlGroup.FACE)
+    private var isRecording by mutableStateOf(false)
+    private var pendingAudio = true
+
+    private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) takeScreenshot() else message = "يحتاج إذن التخزين حتى يحفظ الصورة"
+    }
+    private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        pendingAudio = ok
+        requestProjection()
+    }
+    private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val data = r.data
+        if (r.resultCode == Activity.RESULT_OK && data != null && Build.VERSION.SDK_INT >= 29) {
+            RecordService.start(this, r.resultCode, data, pendingAudio)
+        } else message = "تم إلغاء التسجيل"
+    }
+
     private val menuLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) r.data?.let(::handleMenuResult)
     }
@@ -147,7 +184,12 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         rewindEnabled = settings.rewind ?: profile.rewindByDefault
         aspect = settings.aspect
         padMap = settings.padMap
+        layout = settings.layout(game.system)
         wideCore = usesWideCore(settings, game)
+        if (Build.VERSION.SDK_INT >= 29) {
+            lifecycleScope.launch { RecordService.recording.collect { isRecording = it } }
+            lifecycleScope.launch { RecordService.events.collect { message = it } }
+        }
 
         val savesDir = File(filesDir, "saves").apply { mkdirs() }
         val systemDir = File(filesDir, "system").apply { mkdirs() }
@@ -214,7 +256,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     @Composable
     private fun GameScreen() {
-        val showTouch = touchOverride ?: when (settings.touchMode) {
+        val showTouch = editingLayout || touchOverride ?: when (settings.touchMode) {
             TouchMode.AUTO -> gamepadName == null
             TouchMode.ALWAYS -> true
             TouchMode.HIDDEN -> false
@@ -261,7 +303,16 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     onMenu = ::openMenu,
                     onToggleFastForward = ::toggleFastForward,
                     onRewind = ::setRewinding,
+                    layout = layout,
+                    editing = editingLayout,
+                    selected = selectedGroup,
+                    onSelect = { selectedGroup = it },
+                    onMove = { g, dx, dy -> val p = layout[g]; layout = layout.with(g, p.copy(dx = p.dx + dx, dy = p.dy + dy)) },
+                    recording = isRecording,
+                    onScreenshot = ::takeScreenshot,
+                    onRecord = ::toggleRecording,
                 )
+                if (editingLayout) LayoutEditorPanel(Modifier.align(Alignment.Center))
             } else {
                 // Controls hidden: keep a faint menu button so the player is never stuck.
                 Box(
@@ -486,7 +537,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         if (menuOpening) return
         menuOpening = true
         lifecycleScope.launch(safe) {
+            pendingFrame = grabFrame()
             withContext(Dispatchers.Default) { saveSram(); saveAutoState() }
+            pendingFrame?.let { f -> withContext(Dispatchers.IO) { writeThumb(f, thumbFile(stateFile(this@GameActivity, game, AUTO_SLOT, wideCore))) } }
             menuLauncher.launch(GameMenuActivity.intent(this@GameActivity, game))
             menuOpening = false
         }
@@ -527,7 +580,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         CrashReporter.crumb("menu action=$action slot=$slot")
         when (action) {
             GameMenuActivity.ACTION_SAVE -> lifecycleScope.launch(Dispatchers.Default + safe) {
-                val ok = runCatching { stateFile(this@GameActivity, game, slot, wideCore).writeBytes(retroView.serializeState()) }.isSuccess
+                val file = stateFile(this@GameActivity, game, slot, wideCore)
+                val ok = runCatching { file.writeBytes(retroView.serializeState()) }.isSuccess
+                if (ok) pendingFrame?.let { writeThumb(it, thumbFile(file)) }
                 message = if (ok) "تم الحفظ في الخانة $slot" else "فشل الحفظ"
             }
             GameMenuActivity.ACTION_LOAD -> lifecycleScope.launch(Dispatchers.Default + safe) {
@@ -546,6 +601,106 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 touchOverride = !visibleNow
             }
             GameMenuActivity.ACTION_QUIT -> finish() // state + SRAM were saved when the menu opened
+            GameMenuActivity.ACTION_EDIT_LAYOUT -> { editingLayout = true; message = "اسحب أي مجموعة لمكانها، واضغط عليها حتى تغيّر حجمها" }
+            GameMenuActivity.ACTION_SCREENSHOT -> pendingFrame?.let { saveScreenshot(it) } ?: takeScreenshot()
+        }
+    }
+
+    // ---------- Screenshots, thumbnails ----------
+
+    /** Copies the current game picture from the GL surface (game area only). */
+    private suspend fun grabFrame(): Bitmap? = suspendCancellableCoroutine { cont ->
+        val w = retroView.width; val h = retroView.height
+        if (!coreReady || w <= 0 || h <= 0) { cont.resume(null); return@suspendCancellableCoroutine }
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try {
+            PixelCopy.request(retroView, bmp, { result ->
+                cont.resume(if (result == PixelCopy.SUCCESS) cropToGame(bmp) else null)
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) { cont.resume(null) }
+    }
+
+    /** In "original" mode the view is full screen with black bars: keep only the game. */
+    private fun cropToGame(bmp: Bitmap): Bitmap {
+        if (aspect != AspectMode.ORIGINAL) return bmp
+        val w = bmp.width; val h = bmp.height
+        val gw = minOf(w, (h * nativeRatio).toInt()); val gh = minOf(h, (w / nativeRatio).toInt())
+        return Bitmap.createBitmap(bmp, (w - gw) / 2, (h - gh) / 2, gw, gh)
+    }
+
+    private fun writeThumb(frame: Bitmap, file: File) = runCatching {
+        val tw = 320; val th = (frame.height * tw / frame.width.toFloat()).toInt().coerceAtLeast(1)
+        file.outputStream().use { Bitmap.createScaledBitmap(frame, tw, th, true).compress(Bitmap.CompressFormat.PNG, 90, it) }
+    }
+
+    private fun takeScreenshot() {
+        if (MediaSaver.needsLegacyPermission(this)) { storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE); return }
+        lifecycleScope.launch(safe) {
+            val frame = grabFrame() ?: run { message = "تعذر أخذ اللقطة"; return@launch }
+            saveScreenshot(frame)
+        }
+    }
+
+    private fun saveScreenshot(frame: Bitmap) {
+        if (MediaSaver.needsLegacyPermission(this)) { storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE); return }
+        lifecycleScope.launch(Dispatchers.IO + safe) {
+            val name = "NeonDrive_" + TitleMatch.base(game.title).replace(Regex("[^A-Za-z0-9]+"), "_").take(40) + "_" + System.currentTimeMillis()
+            val ok = MediaSaver.saveImage(this@GameActivity, frame, name)
+            message = if (ok) "📸 تم حفظ اللقطة بالمعرض (Pictures/NeonDrive)" else "تعذر حفظ اللقطة"
+        }
+    }
+
+    // ---------- Recording ----------
+
+    private fun toggleRecording() {
+        if (Build.VERSION.SDK_INT < 29) { message = "تسجيل الفيديو يحتاج أندرويد 10 أو أحدث"; return }
+        if (isRecording) { RecordService.stop(this); return }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            message = "اسمح بالصوت حتى يتسجل صوت اللعبة ويا الفيديو"
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        } else { pendingAudio = true; requestProjection() }
+    }
+
+    private fun requestProjection() {
+        if (Build.VERSION.SDK_INT < 29) return
+        val mpm = getSystemService(MediaProjectionManager::class.java)
+        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+    }
+
+    // ---------- Touch layout editor ----------
+
+    @Composable
+    private fun LayoutEditorPanel(modifier: Modifier) {
+        val g = selectedGroup ?: CtrlGroup.FACE
+        androidx.compose.foundation.layout.Column(
+            modifier.widthIn(max = 360.dp).clip(RoundedCornerShape(16.dp))
+                .background(Neon.Surface.copy(alpha = 0.95f)).padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("تعديل أماكن الأزرار", color = Neon.Cyan, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text("المحدد: ${g.label} • اسحب أي مجموعة لمكانها", color = Neon.TextDim, fontSize = 12.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("الحجم", color = Neon.Text, fontSize = 13.sp)
+                androidx.compose.material3.Slider(
+                    value = layout[g].scale,
+                    onValueChange = { v -> layout = layout.with(g, layout[g].copy(scale = v)) },
+                    valueRange = 0.6f..1.7f,
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
+                Text("${(layout[g].scale * 100).toInt()}%", color = Neon.TextDim, fontSize = 12.sp)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.Button(
+                    onClick = { settings.setLayout(game.system, layout); editingLayout = false; message = "تم حفظ أماكن الأزرار" },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Neon.Cyan),
+                ) { Text("حفظ", color = Neon.Bg, fontWeight = FontWeight.Bold) }
+                androidx.compose.material3.OutlinedButton(onClick = { layout = ControlsLayout() }) {
+                    Text("الافتراضي", color = Neon.Magenta)
+                }
+                androidx.compose.material3.TextButton(onClick = { layout = settings.layout(game.system); editingLayout = false }) {
+                    Text("إلغاء", color = Neon.TextDim)
+                }
+            }
         }
     }
 

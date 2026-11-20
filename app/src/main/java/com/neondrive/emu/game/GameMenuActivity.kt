@@ -13,6 +13,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +74,8 @@ class GameMenuActivity : ComponentActivity() {
         const val ACTION_RESET = "reset"
         const val ACTION_QUIT = "quit"
         const val ACTION_TOUCH = "touch"
+        const val ACTION_EDIT_LAYOUT = "layout"
+        const val ACTION_SCREENSHOT = "shot"
         const val SLOTS = 4
 
         fun intent(context: Context, game: Game) =
@@ -151,6 +157,7 @@ class GameMenuActivity : ComponentActivity() {
                 for (slot in 1..SLOTS) {
                     val f = GameActivity.stateFile(this@GameMenuActivity, game, slot)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SlotThumb(GameActivity.thumbFile(f))
                         Text(
                             "خانة $slot" + if (f.exists()) " • ${fmt.format(Date(f.lastModified()))}" else " • فارغة",
                             color = if (f.exists()) Neon.Text else Neon.TextDim, fontSize = 13.sp, modifier = Modifier.weight(1f),
@@ -199,6 +206,10 @@ class GameMenuActivity : ComponentActivity() {
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MenuButton("أزرار اللمس", Icons.Default.TouchApp, Modifier.weight(1f)) { finishWith(ACTION_TOUCH) }
+                MenuButton("أماكن الأزرار", Icons.Default.OpenWith, Modifier.weight(1f)) { finishWith(ACTION_EDIT_LAYOUT) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MenuButton("لقطة شاشة", Icons.Default.PhotoCamera, Modifier.weight(1f)) { finishWith(ACTION_SCREENSHOT) }
                 MenuButton("إعادة", Icons.Default.RestartAlt, Modifier.weight(1f)) { finishWith(ACTION_RESET) }
                 MenuButton("خروج", Icons.AutoMirrored.Filled.ExitToApp, Modifier.weight(1f)) { finishWith(ACTION_QUIT) }
             }
@@ -392,6 +403,23 @@ class GameMenuActivity : ComponentActivity() {
                 Spacer(Modifier.width(8.dp))
                 Text(text, color = Neon.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             }
+        }
+    }
+
+    /** Small picture of the moment a slot was saved (empty frame when none). */
+    @Composable
+    private fun SlotThumb(file: java.io.File) {
+        val stamp = if (file.exists()) file.lastModified() else 0L
+        val bmp = remember(file.path, stamp) {
+            if (stamp == 0L) null else runCatching { android.graphics.BitmapFactory.decodeFile(file.path)?.asImageBitmap() }.getOrNull()
+        }
+        Box(
+            Modifier.size(width = 64.dp, height = 48.dp).clip(RoundedCornerShape(8.dp))
+                .background(Neon.Bg).border(1.dp, Neon.Cyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bmp != null) Image(bmp, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            else Icon(Icons.Default.Image, null, tint = Neon.TextDim, modifier = Modifier.size(18.dp))
         }
     }
 }

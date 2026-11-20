@@ -142,7 +142,7 @@ class ScreenRecorder(context: Context, private val projection: MediaProjection, 
         val info = MediaCodec.BufferInfo()
         while (true) {
             if (!running && System.nanoTime() - stopRequestedAt > 3_000_000_000L) break // safety
-            val index = runCatching { videoCodec.dequeueOutputBuffer(info, 10_000) }.getOrElse { break }
+            val index = try { videoCodec.dequeueOutputBuffer(info, 10_000) } catch (e: Exception) { break }
             when {
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(lock) {
                     videoTrack = muxer.addTrack(videoCodec.outputFormat); maybeStartMuxer()
@@ -167,7 +167,7 @@ class ScreenRecorder(context: Context, private val projection: MediaProjection, 
         while (true) {
             if (!running && System.nanoTime() - stopRequestedAt > 3_000_000_000L) break // safety
             if (!inputDone) {
-                val inIndex = runCatching { codec.dequeueInputBuffer(10_000) }.getOrElse { break }
+                val inIndex = try { codec.dequeueInputBuffer(10_000) } catch (e: Exception) { break }
                 if (inIndex >= 0) {
                     val inBuf = codec.getInputBuffer(inIndex) ?: continue
                     inBuf.clear()
@@ -182,7 +182,7 @@ class ScreenRecorder(context: Context, private val projection: MediaProjection, 
                     }
                 }
             }
-            var out = runCatching { codec.dequeueOutputBuffer(info, 0) }.getOrElse { break }
+            var out = try { codec.dequeueOutputBuffer(info, 0) } catch (e: Exception) { break }
             while (out != MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     synchronized(lock) { audioTrack = muxer.addTrack(codec.outputFormat); maybeStartMuxer() }
@@ -193,7 +193,7 @@ class ScreenRecorder(context: Context, private val projection: MediaProjection, 
                     codec.releaseOutputBuffer(out, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
-                out = runCatching { codec.dequeueOutputBuffer(info, 0) }.getOrElse { return }
+                out = try { codec.dequeueOutputBuffer(info, 0) } catch (e: Exception) { return }
             }
         }
     }

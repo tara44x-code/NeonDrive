@@ -125,6 +125,11 @@ class Settings(context: Context) {
         get() = com.neondrive.emu.ui.NeonPalette.byId(p.getString("padPal", null), p.getString("padPalC", null))
         set(v) = p.edit().putString("padPal", v.id).putString("padPalC", v.encode()).apply()
 
+    // ---- Touch layout (per console) ----
+    fun layout(system: GameSystem) = com.neondrive.emu.game.ControlsLayout.decode(p.getString("layout_${system.name}", null))
+    fun setLayout(system: GameSystem, layout: com.neondrive.emu.game.ControlsLayout) =
+        p.edit().putString("layout_${system.name}", layout.encode()).apply()
+
     var haptics: Boolean
         get() = p.getBoolean("haptics", true)
         set(v) = p.edit().putBoolean("haptics", v).apply()

@@ -14,6 +14,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -63,6 +70,30 @@ data class ControlsConfig(
     val rewindEnabled: Boolean,
 )
 
+/** Movable groups of on-screen controls. */
+enum class CtrlGroup(val label: String) { TOP("الشريط العلوي"), DPAD("الأسهم"), FACE("الأزرار"), CENTER("START / MODE") }
+
+/** Offset (dp) and size of one group, relative to its default spot. */
+data class GroupPos(val dx: Float = 0f, val dy: Float = 0f, val scale: Float = 1f)
+
+data class ControlsLayout(val groups: Map<CtrlGroup, GroupPos> = emptyMap()) {
+    operator fun get(g: CtrlGroup) = groups[g] ?: GroupPos()
+    fun with(g: CtrlGroup, p: GroupPos) = copy(groups = groups + (g to p))
+
+    fun encode(): String = groups.entries.joinToString(";") { (g, p) -> "${g.name},${p.dx},${p.dy},${p.scale}" }
+
+    companion object {
+        fun decode(s: String?): ControlsLayout = ControlsLayout(
+            s.orEmpty().split(';').mapNotNull { e ->
+                val f = e.split(',')
+                if (f.size != 4) return@mapNotNull null
+                val g = runCatching { CtrlGroup.valueOf(f[0]) }.getOrNull() ?: return@mapNotNull null
+                g to GroupPos(f[1].toFloatOrNull() ?: 0f, f[2].toFloatOrNull() ?: 0f, f[3].toFloatOrNull() ?: 1f)
+            }.toMap()
+        )
+    }
+}
+
 @Composable
 fun TouchControls(
     cfg: ControlsConfig,
@@ -72,22 +103,42 @@ fun TouchControls(
     onMenu: () -> Unit,
     onToggleFastForward: () -> Unit,
     onRewind: (Boolean) -> Unit,
+    layout: ControlsLayout = ControlsLayout(),
+    editing: Boolean = false,
+    selected: CtrlGroup? = null,
+    onSelect: (CtrlGroup) -> Unit = {},
+    onMove: (CtrlGroup, dxDp: Float, dyDp: Float) -> Unit = { _, _, _ -> },
+    recording: Boolean = false,
+    onScreenshot: () -> Unit = {},
+    onRecord: () -> Unit = {},
 ) {
     val s = cfg.scale
-    Box(Modifier.fillMaxSize().alpha(cfg.opacity).safeDrawingPadding().padding(12.dp)) {
-        // Top bar: menu / rewind / fast-forward
-        Row(Modifier.align(Alignment.TopCenter), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            if (cfg.rewindEnabled) {
-                IconPad(Icons.Default.FastRewind, active = false, hold = onRewind, haptics = cfg.haptics)
+    Box(Modifier.fillMaxSize().alpha(if (editing) 1f else cfg.opacity).safeDrawingPadding().padding(12.dp)) {
+        @Composable
+        fun group(g: CtrlGroup, align: Alignment, origin: TransformOrigin, content: @Composable () -> Unit) =
+            MovableGroup(g, align, origin, layout[g], editing, selected == g, onSelect, onMove, content)
+
+        // Top bar: rewind / menu / fast-forward / screenshot / record
+        group(CtrlGroup.TOP, Alignment.TopCenter, TransformOrigin(0.5f, 0f)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (cfg.rewindEnabled) {
+                    IconPad(Icons.Default.FastRewind, active = false, hold = onRewind, haptics = cfg.haptics)
+                }
+                IconPad(Icons.Default.Menu, active = false, tap = onMenu, haptics = cfg.haptics)
+                IconPad(Icons.Default.FastForward, active = fastForward, tap = onToggleFastForward, haptics = cfg.haptics)
+                IconPad(Icons.Default.PhotoCamera, active = false, tap = onScreenshot, haptics = cfg.haptics)
+                IconPad(Icons.Default.FiberManualRecord, active = recording, tap = onRecord, haptics = cfg.haptics,
+                    activeColor = androidx.compose.ui.graphics.Color(0xFFFF3B3B))
             }
-            IconPad(Icons.Default.Menu, active = false, tap = onMenu, haptics = cfg.haptics)
-            IconPad(Icons.Default.FastForward, active = fastForward, tap = onToggleFastForward, haptics = cfg.haptics)
         }
 
-        DPad(Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 8.dp), 160.dp * s, cfg.haptics, onDpad)
+        group(CtrlGroup.DPAD, Alignment.BottomStart, TransformOrigin(0f, 1f)) {
+            DPad(Modifier.padding(start = 8.dp, bottom = 8.dp), 160.dp * s, cfg.haptics, onDpad)
+        }
 
         // Face buttons
-        Box(Modifier.align(Alignment.BottomEnd).padding(end = 4.dp, bottom = 8.dp)) {
+        group(CtrlGroup.FACE, Alignment.BottomEnd, TransformOrigin(1f, 1f)) {
+          Box(Modifier.padding(end = 4.dp, bottom = 8.dp)) {
             val b = 58.dp * s
             when {
                 cfg.system == GameSystem.GENESIS && cfg.sixButtons -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -112,14 +163,66 @@ fun TouchControls(
                     FaceButton("2", b * 1.1f, Neon.pad.sample(1f), SegaKeys.TWO, cfg.haptics, onKey)
                 }
             }
+          }
         }
 
         // Start / Mode
-        Row(Modifier.align(Alignment.BottomCenter), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (cfg.system == GameSystem.GENESIS && cfg.sixButtons) PillButton("MODE", SegaKeys.MODE, cfg.haptics, onKey)
-            PillButton(if (cfg.system == GameSystem.MASTER_SYSTEM) "PAUSE" else "START", SegaKeys.START, cfg.haptics, onKey)
+        group(CtrlGroup.CENTER, Alignment.BottomCenter, TransformOrigin(0.5f, 1f)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (cfg.system == GameSystem.GENESIS && cfg.sixButtons) PillButton("MODE", SegaKeys.MODE, cfg.haptics, onKey)
+                PillButton(if (cfg.system == GameSystem.MASTER_SYSTEM) "PAUSE" else "START", SegaKeys.START, cfg.haptics, onKey)
+            }
         }
     }
+}
+
+/**
+ * A group of controls placed at [align], moved by [pos]. In edit mode it intercepts touches
+ * (before its buttons see them): tap selects it, drag moves it.
+ */
+@Composable
+private fun BoxScope.MovableGroup(
+    group: CtrlGroup,
+    align: Alignment,
+    origin: TransformOrigin,
+    pos: GroupPos,
+    editing: Boolean,
+    isSelected: Boolean,
+    onSelect: (CtrlGroup) -> Unit,
+    onMove: (CtrlGroup, Float, Float) -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val currentPos by rememberUpdatedState(pos)
+    Box(
+        Modifier.align(align)
+            .offset(pos.dx.dp, pos.dy.dp)
+            .graphicsLayer { scaleX = pos.scale; scaleY = pos.scale; transformOrigin = origin }
+            .then(
+                if (!editing) Modifier
+                else Modifier
+                    .border(
+                        if (isSelected) 2.dp else 1.dp,
+                        if (isSelected) Neon.Magenta else Neon.Cyan.copy(alpha = 0.6f),
+                        RoundedCornerShape(16.dp),
+                    )
+                    .pointerInput(group) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(pass = PointerEventPass.Initial)
+                            down.consume()
+                            onSelect(group)
+                            while (true) {
+                                val ev = awaitPointerEvent(PointerEventPass.Initial)
+                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!ch.pressed) { ch.consume(); break }
+                                val d = ch.positionChange() * currentPos.scale
+                                ch.consume()
+                                with(density) { onMove(group, d.x.toDp().value, d.y.toDp().value) }
+                            }
+                        }
+                    }
+            ),
+    ) { content() }
 }
 
 @Composable
@@ -244,6 +347,7 @@ private fun PillButton(label: String, keyCode: Int, haptics: Boolean, onKey: (In
 private fun IconPad(
     icon: ImageVector, active: Boolean, haptics: Boolean,
     tap: (() -> Unit)? = null, hold: ((Boolean) -> Unit)? = null,
+    activeColor: Color = Neon.pad.sample(1f),
 ) {
     var pressed by remember { mutableStateOf(false) }
     val view = LocalView.current
@@ -252,8 +356,8 @@ private fun IconPad(
     val onHold by rememberUpdatedState(hold)
     Box(
         Modifier.size(42.dp)
-            .background(if (lit) Neon.pad.sample(1f).copy(alpha = 0.45f) else Neon.Surface.copy(alpha = 0.6f), CircleShape)
-            .border(1.5.dp, if (lit) Neon.pad.sample(1f) else Neon.pad.sample(0f), CircleShape)
+            .background(if (lit) activeColor.copy(alpha = 0.45f) else Neon.Surface.copy(alpha = 0.6f), CircleShape)
+            .border(1.5.dp, if (lit) activeColor else Neon.pad.sample(0f), CircleShape)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown().consume()
