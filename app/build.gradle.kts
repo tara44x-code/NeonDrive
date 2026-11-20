@@ -59,6 +59,8 @@ android {
 }
 
 dependencies {
+    // Keep every Kotlin stdlib artifact on one version (avoids resolving old 1.9.0 jdk7/jdk8 modules)
+    implementation(platform("org.jetbrains.kotlin:kotlin-bom:2.0.21"))
     implementation(project(":libretrodroid"))
 
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
