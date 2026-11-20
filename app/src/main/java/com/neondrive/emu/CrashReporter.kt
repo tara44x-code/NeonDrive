@@ -104,7 +104,17 @@ object CrashReporter {
     }
 }
 
-class NeonApp : Application() {
+class NeonApp : Application(), coil.ImageLoaderFactory {
+    /** Single image loader for the whole app: covers (PNG) + animated signature (WebP/GIF). */
+    override fun newImageLoader(): coil.ImageLoader = coil.ImageLoader.Builder(this)
+        .components {
+            if (Build.VERSION.SDK_INT >= 28) add(coil.decode.ImageDecoderDecoder.Factory())
+            else add(coil.decode.GifDecoder.Factory())
+        }
+        .crossfade(true)
+        .respectCacheHeaders(false) // keep covers cached so they show offline
+        .build()
+
     override fun onCreate() {
         super.onCreate()
         CrashReporter.install(this)

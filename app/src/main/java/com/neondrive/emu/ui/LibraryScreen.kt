@@ -29,6 +29,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
 import com.neondrive.emu.R
 import com.neondrive.emu.data.Game
 import com.neondrive.emu.data.GameSystem
@@ -159,13 +165,26 @@ private fun SectionTitle(text: String) =
 private fun GameCard(game: Game, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Column(modifier.clickable(onClick = onClick)) {
         NeonPanel(Modifier.fillMaxWidth().aspectRatio(0.72f), radius = 14.dp) {
+            val context = LocalContext.current
+            val urls = remember(game.uri, game.dbName) { game.coverUrls }
+            var attempt by remember(game.uri, game.dbName) { mutableIntStateOf(0) }
+            val request = remember(urls, attempt) {
+                ImageRequest.Builder(context)
+                    .data(urls.getOrNull(attempt))
+                    .addHeader("User-Agent", "Mozilla/5.0 (Android) NeonDrive")
+                    .build()
+            }
             SubcomposeAsyncImage(
-                model = game.coverUrl,
+                model = request,
                 contentDescription = game.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
                 error = { CoverFallback(game) },
                 loading = { CoverFallback(game) },
+                onError = { st ->
+                    if (attempt < urls.lastIndex) attempt++
+                    else com.neondrive.emu.CrashReporter.crumb("no cover for '${game.title}': ${st.result.throwable.message}")
+                },
             )
             Text(
                 game.system.shortLabel,

@@ -32,6 +32,32 @@ object LibretroUrls {
     fun cheatUrl(system: GameSystem, gameName: String) =
         "$DB_RAW/cht/${Uri.encode(system.dbName)}/${Uri.encode(gameName)}.cht"
 
+    /**
+     * Cover URLs to try in order: the exact edition on the thumbnail server, the same file on
+     * GitHub (mirror), then other region editions of the same game.
+     */
+    fun coverCandidates(system: GameSystem, dbName: String?, fallbackTitle: String): List<String> {
+        val base = TitleMatch.base(dbName ?: fallbackTitle)
+        val names = buildList {
+            dbName?.let { add(it) }
+            listOf("(USA)", "(World)", "(USA, Europe)", "(Europe)", "(Japan)", "(Japan, USA)", "(USA, Europe, Korea)")
+                .forEach { add("$base $it") }
+        }.distinct()
+        val urls = mutableListOf<String>()
+        names.forEachIndexed { i, n ->
+            urls += boxartUrl(system, n)
+            if (i == 0) urls += githubBoxartUrl(system, n)
+        }
+        return urls.distinct()
+    }
+
+    private fun safeName(name: String) = name.replace(Regex("[&*/:`<>?\\\\|\"]"), "_")
+
+    fun githubBoxartUrl(system: GameSystem, gameName: String): String {
+        val repo = system.dbName.replace(' ', '_')
+        return "https://raw.githubusercontent.com/libretro-thumbnails/$repo/master/Named_Boxarts/${Uri.encode(safeName(gameName))}.png"
+    }
+
     /** libretro-thumbnails replaces these characters with '_' in file names. */
     fun boxartUrl(system: GameSystem, gameName: String): String {
         val safe = gameName.replace(Regex("[&*/:`<>?\\\\|\"]"), "_")
