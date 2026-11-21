@@ -38,6 +38,7 @@
 #include "input.h"
 #include "rumble.h"
 #include "shadermanager.h"
+#include "netplay.h"
 #include "utils/javautils.h"
 #include "environment.h"
 #include "vfs/vfsfile.h"
@@ -135,6 +136,9 @@ public:
     int readCapturedAudio(int16_t* out, int maxSamples);
     int getCoreSampleRate() const { return coreSampleRate; }
     void setVideoCapture(bool enabled);
+
+    // NeonDrive: two-player netplay (lockstep)
+    Netplay netplay;
     /** Latest raw game frame, scaled (nearest) to dstW x dstH, as I420. Returns frame number or -1. */
     int64_t readCapturedFrameI420(uint8_t* dst, int dstW, int dstH);
     std::array<float, 4> getForegroundBounds();
@@ -167,6 +171,9 @@ protected:
 private:
     std::mutex captureMutex;
     std::mutex videoCaptureMutex;
+    bool netplayApplying = false;
+    uint16_t netplayPorts[2] = { 0, 0 };
+    uint16_t localJoypadMask();
     bool videoCaptureEnabled = false;
     std::vector<uint32_t> captureFrame;   // 0x00RRGGBB
     int captureW = 0;

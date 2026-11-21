@@ -41,8 +41,8 @@ enum class TouchMode(val label: String) {
 
 /** Targets a physical controller button can be mapped to. [keyCode] is what we send to the core. */
 enum class PadTarget(val label: String, val keyCode: Int) {
-    A("A", 99), B("B", 96), C("C", 97),               // KEYCODE_BUTTON_X / _A / _B (see SegaKeys)
-    X("X", 102), Y("Y", 100), Z("Z", 103),            // KEYCODE_BUTTON_L1 / _Y / _R1
+    A("A", 100), B("B", 97), C("C", 96),              // KEYCODE_BUTTON_Y / _B / _A (see SegaKeys)
+    X("X", 102), Y("Y", 99), Z("Z", 103),             // KEYCODE_BUTTON_L1 / _X / _R1
     START("START", 108), MODE("MODE", 109),           // KEYCODE_BUTTON_START / _SELECT
     MENU("القائمة", -1),
 }

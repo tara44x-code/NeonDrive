@@ -577,6 +577,48 @@ JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_readCaptur
     return n;
 }
 
+// ---- NeonDrive: netplay
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayStart(
+    JNIEnv* env, jclass obj, jboolean host, jint delay
+) {
+    LibretroDroid::getInstance().netplay.start(host, delay);
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayStop(JNIEnv* env, jclass obj) {
+    LibretroDroid::getInstance().netplay.stop();
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayPushRemote(
+    JNIEnv* env, jclass obj, jlong frame, jint mask
+) {
+    LibretroDroid::getInstance().netplay.pushRemote(frame, (uint16_t) mask);
+}
+
+JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayPollLocal(
+    JNIEnv* env, jclass obj, jlongArray frames, jintArray masks
+) {
+    jsize max = std::min(env->GetArrayLength(frames), env->GetArrayLength(masks));
+    std::vector<int64_t> f(max);
+    std::vector<uint16_t> m(max);
+    int n = LibretroDroid::getInstance().netplay.pollOutbox(f.data(), m.data(), max);
+    if (n > 0) {
+        std::vector<jlong> jf(f.begin(), f.begin() + n);
+        std::vector<jint> jm(m.begin(), m.begin() + n);
+        env->SetLongArrayRegion(frames, 0, n, jf.data());
+        env->SetIntArrayRegion(masks, 0, n, jm.data());
+    }
+    return n;
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayStatus(
+    JNIEnv* env, jclass obj, jlongArray out
+) {
+    int64_t s[3];
+    LibretroDroid::getInstance().netplay.status(s);
+    jlong j[3] = { (jlong) s[0], (jlong) s[1], (jlong) s[2] };
+    env->SetLongArrayRegion(out, 0, 3, j);
+}
+
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setVideoCapture(
     JNIEnv* env,
     jclass obj,

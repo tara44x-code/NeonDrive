@@ -106,6 +106,13 @@ public class LibretroDroid {
     public static native int readCapturedAudio(short[] buffer);
     public static native int getCoreSampleRate();
     public static native void setVideoCapture(boolean enabled);
+
+    // NeonDrive: two-player netplay (lockstep)
+    public static native void netplayStart(boolean host, int delay);
+    public static native void netplayStop();
+    public static native void netplayPushRemote(long frame, int mask);
+    public static native int netplayPollLocal(long[] frames, int[] masks);
+    public static native void netplayStatus(long[] out);
     public static native long readCapturedFrameI420(java.nio.ByteBuffer directBuffer, int width, int height);
     public static native float[] getForegroundBounds();
 

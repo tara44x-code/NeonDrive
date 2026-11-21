@@ -78,8 +78,18 @@ class GameMenuActivity : ComponentActivity() {
         const val ACTION_SCREENSHOT = "shot"
         const val SLOTS = 4
 
-        fun intent(context: Context, game: Game) =
-            Intent(context, GameMenuActivity::class.java).putExtra(EXTRA_GAME, game.toJson().toString())
+        private const val EXTRA_NET = "net"
+        const val ACTION_NET_HOST = "net_host"
+        const val ACTION_NET_JOIN = "net_join"
+        const val ACTION_NET_STOP = "net_stop"
+        const val RES_NET_ADDRESS = "net_address"
+        const val RES_NET_PORT = "net_port"
+
+        /** [netStatus]: null when not in two-player mode, else a short status line. */
+        fun intent(context: Context, game: Game, netStatus: String? = null) =
+            Intent(context, GameMenuActivity::class.java)
+                .putExtra(EXTRA_GAME, game.toJson().toString())
+                .putExtra(EXTRA_NET, netStatus)
     }
 
     private lateinit var game: Game
@@ -105,7 +115,8 @@ class GameMenuActivity : ComponentActivity() {
                     Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                         NeonPanel(Modifier.widthIn(max = 560.dp).fillMaxWidth().fillMaxHeight(0.95f), glow = true) {
                             when (page) {
-                                "main" -> MainPage(onCheats = { page = "cheats" })
+                                "main" -> MainPage(onCheats = { page = "cheats" }, onNet = { page = "net" })
+                                "net" -> NetPage(onBack = { page = "main" })
                                 "cheats" -> CheatsPage(onBack = { page = "main" })
                             }
                         }
@@ -130,8 +141,11 @@ class GameMenuActivity : ComponentActivity() {
         setResultFor(action, slot); finish()
     }
 
+    private val netStatus: String? by lazy { intent.getStringExtra(EXTRA_NET) }
+    private val inNetplay: Boolean get() = netStatus != null
+
     @Composable
-    private fun MainPage(onCheats: () -> Unit) {
+    private fun MainPage(onCheats: () -> Unit, onNet: () -> Unit) {
         var filter by remember { mutableStateOf(settings.filter) }
         var aspect by remember { mutableStateOf(settings.aspect) }
         var colorMode by remember { mutableStateOf(settings.colorMode) }
@@ -146,11 +160,16 @@ class GameMenuActivity : ComponentActivity() {
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MenuButton("استئناف", Icons.Default.PlayArrow, Modifier.weight(1f)) { finishWith(null) }
-                MenuButton("الجيتات", Icons.Default.AutoFixHigh, Modifier.weight(1f), onCheats)
+                MenuButton(if (inNetplay) "لعب زوجي ✓" else "لعب زوجي", Icons.Default.Groups, Modifier.weight(1f), onNet)
+                if (!inNetplay) MenuButton("الجيتات", Icons.Default.AutoFixHigh, Modifier.weight(1f), onCheats)
+            }
+            netStatus?.let {
+                Text("👥 $it • الحفظ والجيتات والتسريع موقفة وقت اللعب الزوجي حتى يبقى الموبايلين متطابقين",
+                    color = Neon.TextDim, fontSize = 11.sp)
             }
 
-            Text("الحفظ والتحميل", color = Neon.Cyan, fontWeight = FontWeight.Bold)
-            Column(
+            if (!inNetplay) Text("الحفظ والتحميل", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+            if (!inNetplay) Column(
                 Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -421,5 +440,105 @@ class GameMenuActivity : ComponentActivity() {
             if (bmp != null) Image(bmp, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else Icon(Icons.Default.Image, null, tint = Neon.TextDim, modifier = Modifier.size(18.dp))
         }
+    }
+
+    /** Two-player over Wi-Fi: host (player 1) or join (player 2). */
+    @Composable
+    private fun NetPage(onBack: () -> Unit) {
+        var hosts by remember { mutableStateOf<List<com.neondrive.emu.net.NetHost>>(emptyList()) }
+        var manual by remember { mutableStateOf("") }
+        val myAddress = remember { com.neondrive.emu.net.NetplaySession.localAddress() }
+
+        if (!inNetplay) {
+            DisposableEffect(Unit) {
+                val d = com.neondrive.emu.net.NetplayDiscovery(this@GameMenuActivity) { hosts = it }
+                d.start()
+                onDispose { d.stop() }
+            }
+        }
+
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع", tint = Neon.Cyan) }
+                Text("لعب زوجي على الوايفاي", style = Neon.glowText.copy(fontSize = 18.sp))
+            }
+
+            if (inNetplay) {
+                Text("👥 $netStatus", color = Neon.Text, fontSize = 14.sp)
+                Button(
+                    onClick = { finishWith(ACTION_NET_STOP) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Neon.Magenta),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("إنهاء اللعب الزوجي", color = Neon.Bg, fontWeight = FontWeight.Bold) }
+                return@Column
+            }
+
+            Text(
+                "الموبايلين لازم يكونون على نفس الوايفاي (أو واحد مشغّل نقطة اتصال للثاني)، ونفس اللعبة مفتوحة على الاثنين.",
+                color = Neon.TextDim, fontSize = 12.sp,
+            )
+
+            NeonPanel(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("1) استضافة — إنت اللاعب 1", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+                    Text("هذا الموبايل يصير السيرفر، وتكمل لعب لحد ما يدخل اللاعب الثاني." +
+                        (myAddress?.let { "\nعنوانك: $it" } ?: ""), color = Neon.TextDim, fontSize = 12.sp)
+                    Button(
+                        onClick = { finishWith(ACTION_NET_HOST) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Neon.Cyan),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("بدء الاستضافة", color = Neon.Bg, fontWeight = FontWeight.Bold) }
+                }
+            }
+
+            NeonPanel(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("2) انضمام — إنت اللاعب 2", color = Neon.Magenta, fontWeight = FontWeight.Bold)
+                    if (hosts.isEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(16.dp), color = Neon.Magenta, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("أدوّر على موبايل مستضيف بالشبكة…", color = Neon.TextDim, fontSize = 12.sp)
+                        }
+                    }
+                    hosts.forEach { h ->
+                        OutlinedButton(
+                            onClick = { joinResult(h.address, h.port) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("${h.name}  (${h.address})", color = Neon.Text, fontSize = 13.sp, maxLines = 1) }
+                    }
+                    Text("أو اكتب عنوان المستضيف:", color = Neon.TextDim, fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            manual, { manual = it.trim() }, Modifier.weight(1f), singleLine = true,
+                            placeholder = { Text("192.168.1.5") },
+                            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { joinResult(manual, com.neondrive.emu.net.NetplaySession.PORT) },
+                            enabled = manual.count { it == '.' } == 3,
+                            colors = ButtonDefaults.buttonColors(containerColor = Neon.Magenta),
+                        ) { Text("اتصال", color = Neon.Bg) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun joinResult(address: String, port: Int) {
+        setResult(RESULT_OK, Intent().apply {
+            putExtra(RES_ACTION, ACTION_NET_JOIN)
+            putExtra(RES_NET_ADDRESS, address)
+            putExtra(RES_NET_PORT, port)
+            putExtra(RES_CHEATS_CHANGED, cheatsChanged)
+            putExtra(RES_FILTER_CHANGED, filterChanged)
+            putExtra(RES_ASPECT_CHANGED, aspectChanged)
+            putExtra(RES_IMAGE_CHANGED, imageChanged)
+        })
+        finish()
     }
 }

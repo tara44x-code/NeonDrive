@@ -149,6 +149,15 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private var editingLayout by mutableStateOf(false)
     private var layout by mutableStateOf(ControlsLayout())
     private var selectedGroup by mutableStateOf<CtrlGroup?>(CtrlGroup.FACE)
+    // ---- two-player (Wi-Fi netplay)
+    private var netSession: com.neondrive.emu.net.NetplaySession? = null
+    private var netStatus by mutableStateOf<String?>(null)     // null = not in two-player mode
+    private var netConnected by mutableStateOf(false)
+    private var netPing by mutableStateOf(-1)
+    private var netWaitingForPeer by mutableStateOf(false)
+    private var sixButtonId: Int? = null
+    private val inNetplay: Boolean get() = netStatus != null
+
     private var isRecording by mutableStateOf(false)
     private var recordStartMs by mutableStateOf(0L)
     private var recorder: GameRecorder? = null
@@ -321,6 +330,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             }
 
             if (isRecording) RecordingBadge(Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 14.dp))
+            if (netStatus != null) NetplayBadge(Modifier.align(Alignment.TopEnd).padding(end = 14.dp, top = 14.dp))
 
             message?.let {
                 Text(
@@ -398,6 +408,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     val options = retroView.getControllers().firstOrNull().orEmpty()
                     options.firstOrNull { it.description?.contains("6") == true }?.let {
                         CrashReporter.crumb("controller -> ${it.description}")
+                        sixButtonId = it.id
                         retroView.setControllerType(0, it.id)
                     }
                 }
@@ -427,7 +438,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     val step = if (rewindEnabled) profile.rewindIntervalMs else 1_000L
                     while (isActive) {
                         delay(step)
-                        if (rewindEnabled && !rewinding) captureRewind()
+                        if (rewindEnabled && !rewinding && !inNetplay) captureRewind()
                         elapsed += step
                         if (elapsed >= 30_000) { elapsed = 0; saveSram(); saveAutoState() }
                     }
@@ -453,6 +464,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     private fun setRewinding(on: Boolean) {
         if (!coreReady) return
+        if (inNetplay) { if (on) message = "الرجوع بالزمن موقف وقت اللعب الزوجي"; return }
         rewinding = on
         if (!on) return
         lifecycleScope.launch(Dispatchers.Default + safe) {
@@ -467,6 +479,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     private fun toggleFastForward() {
         if (!coreReady) return
+        if (inNetplay) { message = "التسريع موقف وقت اللعب الزوجي"; return }
         fastForward = !fastForward
         retroView.frameSpeed = if (fastForward) (if (profile.tier == Tier.LOW) 2 else 3) else 1
         CrashReporter.crumb("fast-forward=$fastForward")
@@ -498,6 +511,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
      * never more than [CheatRepository.MAX_PARTS] code parts in total.
      */
     private suspend fun applyCheats() = withContext(Dispatchers.Default) {
+        if (inNetplay) return@withContext
         val enabled = cheats.load(game).filter { it.enabled }
         onEmulationThread { LibretroDroid.resetCheat() }
         var parts = 0
@@ -521,6 +535,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     }
 
     override fun onDestroy() {
+        netSession?.close(); netSession = null
         super.onDestroy()
         if (isFinishing && ::game.isInitialized) {
             guardFile.delete() // normal exit, not a crash
@@ -540,7 +555,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             pendingFrame = grabFrame()
             withContext(Dispatchers.Default) { saveSram(); saveAutoState() }
             pendingFrame?.let { f -> withContext(Dispatchers.IO) { writeThumb(f, thumbFile(stateFile(this@GameActivity, game, AUTO_SLOT, wideCore))) } }
-            menuLauncher.launch(GameMenuActivity.intent(this@GameActivity, game))
+            menuLauncher.launch(GameMenuActivity.intent(this@GameActivity, game, netStatus))
             menuOpening = false
         }
     }
@@ -577,6 +592,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
         val slot = data.getIntExtra(GameMenuActivity.RES_SLOT, 0)
         val action = data.getStringExtra(GameMenuActivity.RES_ACTION) ?: return
+        if (inNetplay && action in setOf(GameMenuActivity.ACTION_SAVE, GameMenuActivity.ACTION_LOAD, GameMenuActivity.ACTION_RESET)) {
+            message = "هذا موقف وقت اللعب الزوجي"; return
+        }
         CrashReporter.crumb("menu action=$action slot=$slot")
         when (action) {
             GameMenuActivity.ACTION_SAVE -> lifecycleScope.launch(Dispatchers.Default + safe) {
@@ -601,6 +619,12 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 touchOverride = !visibleNow
             }
             GameMenuActivity.ACTION_QUIT -> finish() // state + SRAM were saved when the menu opened
+            GameMenuActivity.ACTION_NET_HOST -> startHosting()
+            GameMenuActivity.ACTION_NET_JOIN -> startJoining(
+                data.getStringExtra(GameMenuActivity.RES_NET_ADDRESS) ?: return,
+                data.getIntExtra(GameMenuActivity.RES_NET_PORT, com.neondrive.emu.net.NetplaySession.PORT),
+            )
+            GameMenuActivity.ACTION_NET_STOP -> stopNetplay("انتهى اللعب الزوجي")
             GameMenuActivity.ACTION_EDIT_LAYOUT -> { editingLayout = true; message = "اسحب أي مجموعة لمكانها، واضغط عليها حتى تغيّر حجمها" }
             GameMenuActivity.ACTION_SCREENSHOT -> pendingFrame?.let { saveScreenshot(it) } ?: takeScreenshot()
         }
@@ -648,6 +672,91 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             val ok = MediaSaver.saveImage(this@GameActivity, frame, name)
             message = if (ok) "📸 تم حفظ اللقطة بالمعرض (Pictures/NeonDrive)" else "تعذر حفظ اللقطة"
         }
+    }
+
+    // ---------- Two-player over Wi-Fi ----------
+
+    private val netListener = object : com.neondrive.emu.net.NetplaySession.Listener {
+        override fun onEmulationThread(block: () -> Unit) = this@GameActivity.onEmulationThread(block)
+        override fun onWaiting(address: String) {
+            netStatus = "بانتظار اللاعب الثاني • $address"
+        }
+        override fun onConnected(peer: String, asHost: Boolean) {
+            netConnected = true
+            netStatus = if (asHost) "متصل • إنت اللاعب 1" else "متصل • إنت اللاعب 2"
+            message = if (asHost) "👥 دخل اللاعب الثاني! إنت اللاعب 1" else "👥 اتصلت! إنت اللاعب 2"
+            CrashReporter.crumb("netplay connected host=$asHost")
+            synchronized(rewindBuffer) { rewindBuffer.clear() }
+        }
+        override fun onPing(ms: Int) { netPing = ms }
+        override fun onEnded(reason: String) {
+            runOnUiThread {
+                netSession = null; netStatus = null; netConnected = false; netPing = -1; netWaitingForPeer = false
+                message = reason
+                CrashReporter.crumb("netplay ended: $reason")
+            }
+        }
+    }
+
+    /** Both phones must use identical controllers before the shared start state. */
+    private fun prepareNetplayCore() {
+        if (game.system == GameSystem.GENESIS) {
+            sixButtonId?.let { id -> runCatching { LibretroDroid.setControllerType(0, id); LibretroDroid.setControllerType(1, id) } }
+        }
+        if (fastForward) { fastForward = false }
+        LibretroDroid.setFrameSpeed(1)
+    }
+
+    private fun startHosting() {
+        if (netSession != null || !coreReady) return
+        val s = com.neondrive.emu.net.NetplaySession(this, game.crc, game.title, netListener)
+        netSession = s
+        netStatus = "يجهّز السيرفر…"
+        s.host(captureState = { prepareNetplayCore(); retroView.serializeState(false) })
+        watchNetplay()
+    }
+
+    private fun startJoining(address: String, port: Int) {
+        if (netSession != null || !coreReady) return
+        val s = com.neondrive.emu.net.NetplaySession(this, game.crc, game.title, netListener)
+        netSession = s
+        netStatus = "يتصل بـ $address…"
+        s.join(address, port) { state -> prepareNetplayCore(); retroView.unserializeState(state, false) }
+        watchNetplay()
+    }
+
+    private fun stopNetplay(reason: String) {
+        netSession?.close()
+        netSession = null; netStatus = null; netConnected = false; netPing = -1; netWaitingForPeer = false
+        message = reason
+    }
+
+    /** Shows "waiting for the other player" when the game is held for them. */
+    private fun watchNetplay() {
+        lifecycleScope.launch(safe) {
+            val st = LongArray(3)
+            while (netSession != null) {
+                delay(400)
+                if (!netConnected) continue
+                LibretroDroid.netplayStatus(st)
+                netWaitingForPeer = st[2] > 40   // ~0.5 s without the other player's buttons
+            }
+        }
+    }
+
+    @Composable
+    private fun NetplayBadge(modifier: Modifier) {
+        val text = when {
+            !netConnected -> "👥 ${netStatus ?: ""}"
+            netWaitingForPeer -> "⏸ بانتظار اللاعب الثاني…"
+            netPing >= 0 -> "👥 متصل • ${netPing}ms"
+            else -> "👥 متصل"
+        }
+        Text(
+            text, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+            modifier = modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.55f))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        )
     }
 
     // ---------- Recording ----------

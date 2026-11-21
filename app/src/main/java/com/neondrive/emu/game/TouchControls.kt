@@ -43,22 +43,23 @@ import com.neondrive.emu.ui.Neon
 import kotlin.math.hypot
 
 /**
- * LibretroDroid maps Android gamepad keys to the RetroPad (A->B, B->A, X->Y, Y->X),
- * and Genesis Plus GX maps the RetroPad to Sega buttons (Y->A, B->B, A->C, L->X, X->Y, R->Z, Select->Mode).
+ * Button chain (checked in both sources):
+ *  LibretroDroid: Android BUTTON_A -> RetroPad A, B -> B, X -> X, Y -> Y, L1 -> L, R1 -> R.
+ *  Genesis Plus GX: RetroPad Y -> Sega A, B -> B, A -> C, L -> X, X -> Y, R -> Z, Select -> Mode;
+ *                   Master System / Game Gear: B -> button 1, A -> button 2.
  * So each on-screen Sega button sends the Android key below.
  */
 object SegaKeys {
-    const val A = KeyEvent.KEYCODE_BUTTON_X
-    const val B = KeyEvent.KEYCODE_BUTTON_A
-    const val C = KeyEvent.KEYCODE_BUTTON_B
+    const val A = KeyEvent.KEYCODE_BUTTON_Y
+    const val B = KeyEvent.KEYCODE_BUTTON_B
+    const val C = KeyEvent.KEYCODE_BUTTON_A
     const val X = KeyEvent.KEYCODE_BUTTON_L1
-    const val Y = KeyEvent.KEYCODE_BUTTON_Y
+    const val Y = KeyEvent.KEYCODE_BUTTON_X
     const val Z = KeyEvent.KEYCODE_BUTTON_R1
     const val START = KeyEvent.KEYCODE_BUTTON_START
     const val MODE = KeyEvent.KEYCODE_BUTTON_SELECT
-    // Master System / Game Gear: button 1 = RetroPad B, button 2 = RetroPad A
-    const val ONE = KeyEvent.KEYCODE_BUTTON_A
-    const val TWO = KeyEvent.KEYCODE_BUTTON_B
+    const val ONE = KeyEvent.KEYCODE_BUTTON_B
+    const val TWO = KeyEvent.KEYCODE_BUTTON_A
 }
 
 data class ControlsConfig(

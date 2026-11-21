@@ -405,6 +405,7 @@ void LibretroDroid::loadGameFromVirtualFiles(std::vector<VFSFile> virtualFiles) 
 }
 
 void LibretroDroid::destroy() {
+    netplay.stop();
     std::lock_guard<std::mutex> lock(coreLock);
 
     LOGD("Performing libretrodroid destroy");
@@ -448,16 +449,32 @@ void LibretroDroid::step() {
 
     LOGD("Stepping into retro_run()");
 
-    unsigned frames = 1;
-    if (fpsSync) {
-        unsigned requestedFrames = fpsSync->advanceFrames();
+    if (netplay.isActive()) {
+        // NeonDrive netplay: exactly one frame per tick, only when both players' buttons are known.
+        if (fpsSync) fpsSync->advanceFrames();
+        uint16_t ports[2] = { 0, 0 };
+        if (netplay.prepareFrame(localJoypadMask(), ports, 12)) {
+            netplayPorts[0] = ports[0];
+            netplayPorts[1] = ports[1];
+            netplayApplying = true;
+            core->retro_run();
+            netplayApplying = false;
+            netplay.frameDone();
+        } else {
+            netplay.noteStall();
+        }
+    } else {
+        unsigned frames = 1;
+        if (fpsSync) {
+            unsigned requestedFrames = fpsSync->advanceFrames();
 
-        // If the application runs too slow it's better to just skip those frames.
-        frames = std::min(requestedFrames, 2u);
+            // If the application runs too slow it's better to just skip those frames.
+            frames = std::min(requestedFrames, 2u);
+        }
+
+        for (size_t i = 0; i < frames * frameSpeed; i++)
+            core->retro_run();
     }
-
-    for (size_t i = 0; i < frames * frameSpeed; i++)
-        core->retro_run();
 
     if (video && !video->rendersInVideoCallback()) {
         video->renderFrame();
@@ -652,10 +669,26 @@ int16_t LibretroDroid::handleSetInputState(
     unsigned int index,
     unsigned int id
 ) {
+    if (netplayApplying) {
+        // Both players come from the netplay exchange; nothing else may influence the game.
+        if (device != RETRO_DEVICE_JOYPAD || port > 1) return 0;
+        if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t) netplayPorts[port];
+        return id < 16 ? (int16_t) ((netplayPorts[port] >> id) & 1) : 0;
+    }
     if (input) {
         return input->getInputState(port, device, index, id);
     }
     return 0;
+}
+
+// This phone's player is always on port 0 of the touch/gamepad input.
+uint16_t LibretroDroid::localJoypadMask() {
+    if (!input) return 0;
+    uint16_t mask = 0;
+    for (unsigned id = 0; id < 16; id++) {
+        if (input->getInputState(0, RETRO_DEVICE_JOYPAD, 0, id)) mask |= (uint16_t) (1u << id);
+    }
+    return mask;
 }
 
 uintptr_t LibretroDroid::handleGetCurrentFrameBuffer() {
