@@ -769,7 +769,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         val name = "NeonDrive_" + TitleMatch.base(game.title).replace(Regex("[^A-Za-z0-9]+"), "_").take(40) +
             "_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
         val file = File(cacheDir, "$name.mp4")
-        val rec = GameRecorder(file, nativeRatio, if (profile.tier == Tier.HIGH) 720 else 480)
+        val rec = GameRecorder(file, if (profile.tier == Tier.HIGH) 1080 else 720)
         try { rec.start() } catch (e: Exception) {
             CrashReporter.crumb("recording failed to start: ${e.message}")
             message = "تعذر بدء التسجيل"; return

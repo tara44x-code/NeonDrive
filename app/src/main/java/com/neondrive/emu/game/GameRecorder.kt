@@ -17,13 +17,16 @@ import kotlin.concurrent.thread
  * from the emulator. The game never waits for the encoder, the touch buttons are never in it,
  * and it needs no permission. Works from Android 7.
  *
- * @param displayRatio shape of the console picture (4:3, Game Gear 10:9)
- * @param lines video height (720 on strong phones, 480 otherwise)
+ * The picture is enlarged by a WHOLE number (e.g. 320x224 x4 = 1280x896): every game pixel
+ * becomes an exact square block, so edges stay sharp and colours never bleed (4:2:0 chroma
+ * blocks fall inside one game pixel).
+ *
+ * @param maxLines tallest video allowed (1080 on strong phones, 720 otherwise)
  */
-class GameRecorder(private val outFile: File, displayRatio: Float, lines: Int) {
+class GameRecorder(private val outFile: File, private val maxLines: Int) {
 
-    private val encH = (lines / 16) * 16
-    private val encW = ((encH * displayRatio).toInt() / 16) * 16
+    private var encW = 0
+    private var encH = 0
 
     private val lock = Any()
     private lateinit var muxer: MediaMuxer
@@ -45,16 +48,6 @@ class GameRecorder(private val outFile: File, displayRatio: Float, lines: Int) {
         muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         startNs = System.nanoTime()
 
-        val vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encW, encH).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-            setInteger(MediaFormat.KEY_BIT_RATE, if (encH >= 720) 8_000_000 else 5_000_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        }
-        videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        videoCodec.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        videoCodec.start()
-
         expectAudio = runCatching { setupAudio() }.isSuccess
 
         running = true
@@ -68,7 +61,51 @@ class GameRecorder(private val outFile: File, displayRatio: Float, lines: Int) {
 
     // ------------------------------------------------------------ video
 
+    /** Largest whole-number scale of the game frame that the encoder accepts. */
+    private fun setupVideo(gameW: Int, gameH: Int) {
+        var k = maxOf(1, maxLines / gameH)
+        while (k > 1 && gameW * k > 1920) k--
+        encW = (gameW * k) / 16 * 16
+        encH = (gameH * k) / 16 * 16
+        // Pixel art needs plenty of bits: ~0.3 bit per pixel per frame, 12-30 Mbps.
+        val bitrate = (encW.toLong() * encH * 60 * 3 / 10).coerceIn(12_000_000, 30_000_000).toInt()
+        fun format(highProfile: Boolean) = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encW, encH).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            if (highProfile) {
+                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
+                setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel42)
+            }
+        }
+        // Prefer High profile (more detail for the same size); fall back to the encoder's default.
+        val codec = try {
+            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).also {
+                it.configure(format(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
+        } catch (e: Exception) {
+            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).also {
+                it.configure(format(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
+        }
+        codec.start()
+        videoCodec = codec
+    }
+
     private fun videoLoop() {
+        // Wait for the first game frame to learn its real size (up to 2 s).
+        val size = IntArray(2)
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (running && System.nanoTime() < deadline) {
+            LibretroDroid.getCapturedFrameSize(size)
+            if (size[0] > 0 && size[1] > 0) break
+            Thread.sleep(10)
+        }
+        if (size[0] <= 0 || size[1] <= 0) { size[0] = 320; size[1] = 224 }
+        try { setupVideo(size[0], size[1]) } catch (e: Exception) { return }
+
         val frameSize = encW * encH * 3 / 2
         val direct = ByteBuffer.allocateDirect(frameSize)
         val yuv = ByteArray(frameSize)
@@ -246,7 +283,7 @@ class GameRecorder(private val outFile: File, displayRatio: Float, lines: Int) {
         LibretroDroid.setAudioCapture(false)
         workers.forEach { it.join(4_000) }
         runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
-        runCatching { videoCodec.stop() }; runCatching { videoCodec.release() }
+        if (::videoCodec.isInitialized) { runCatching { videoCodec.stop() }; runCatching { videoCodec.release() } }
         val ok = synchronized(lock) {
             val started = muxerStarted
             if (started) runCatching { muxer.stop() }

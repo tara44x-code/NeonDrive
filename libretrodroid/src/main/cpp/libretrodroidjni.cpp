@@ -640,6 +640,14 @@ JNIEXPORT jlong JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_readCaptu
     return LibretroDroid::getInstance().readCapturedFrameI420(dst, width, height);
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getCapturedFrameSize(
+    JNIEnv* env, jclass obj, jintArray out
+) {
+    auto size = LibretroDroid::getInstance().getCapturedFrameSize();
+    jint v[2] = { size.first, size.second };
+    env->SetIntArrayRegion(out, 0, 2, v);
+}
+
 JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getCoreSampleRate(
     JNIEnv* env,
     jclass obj

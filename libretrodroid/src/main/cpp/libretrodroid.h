@@ -141,6 +141,11 @@ public:
     Netplay netplay;
     /** Latest raw game frame, scaled (nearest) to dstW x dstH, as I420. Returns frame number or -1. */
     int64_t readCapturedFrameI420(uint8_t* dst, int dstW, int dstH);
+    /** Size of the latest raw game frame (0x0 before the first one). */
+    std::pair<int, int> getCapturedFrameSize() {
+        std::lock_guard<std::mutex> lock(videoCaptureMutex);
+        return { captureW, captureH };
+    }
     std::array<float, 4> getForegroundBounds();
 
     void setShaderConfig(ShaderManager::Config shaderConfig);
