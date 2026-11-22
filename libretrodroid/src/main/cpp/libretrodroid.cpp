@@ -25,6 +25,7 @@
 #include <unordered_set>
 
 #include "libretrodroid.h"
+#include <cstring>
 #include <zlib.h>
 #include "utils/libretrodroidexception.h"
 #include "log.h"
@@ -218,6 +219,7 @@ void LibretroDroid::onSurfaceCreated() {
     );
 
     video = std::unique_ptr<Video>(newVideo);
+    applyFilteredCapture();
 
     if (Environment::getInstance().getHwContextReset() != nullptr) {
         Environment::getInstance().getHwContextReset()();
@@ -558,7 +560,7 @@ void LibretroDroid::handleVideoRefresh(
     unsigned int height,
     size_t pitch
 ) {
-    if (videoCaptureEnabled && data != nullptr && data != RETRO_HW_FRAME_BUFFER_VALID) {
+    if (videoCaptureEnabled && !filteredDelivering && data != nullptr && data != RETRO_HW_FRAME_BUFFER_VALID) {
         captureVideoFrame(data, width, height, pitch);
     }
     if (video) {
@@ -602,9 +604,58 @@ int LibretroDroid::readCapturedAudio(int16_t* out, int maxSamples) {
 }
 
 void LibretroDroid::setVideoCapture(bool enabled) {
+    {
+        std::lock_guard<std::mutex> lock(videoCaptureMutex);
+        videoCaptureEnabled = enabled;
+        filteredDelivering = false;
+        captureIsGl = false;
+        readerSeq = -1;
+        if (!enabled) {
+            captureFrame.clear(); captureFrame.shrink_to_fit();
+            readerFrame.clear(); readerFrame.shrink_to_fit();
+            captureW = captureH = 0;
+            filteredW = filteredH = 0;
+        }
+    }
+    if (!enabled) applyFilteredCapture();
+}
+
+void LibretroDroid::setFilteredCapture(int w, int h) {
+    {
+        std::lock_guard<std::mutex> lock(videoCaptureMutex);
+        filteredW = w;
+        filteredH = h;
+    }
+    applyFilteredCapture();
+}
+
+void LibretroDroid::applyFilteredCapture() {
+    int w, h;
+    {
+        std::lock_guard<std::mutex> lock(videoCaptureMutex);
+        w = videoCaptureEnabled ? filteredW : 0;
+        h = videoCaptureEnabled ? filteredH : 0;
+    }
+    if (!video) return;
+    video->setFilteredCapture(w, h, [this](const uint8_t* rgba, int fw, int fh) { onFilteredFrame(rgba, fw, fh); });
+}
+
+// Runs on the GL thread: one memcpy of the frame the GPU just drew.
+void LibretroDroid::onFilteredFrame(const uint8_t* rgba, int w, int h) {
     std::lock_guard<std::mutex> lock(videoCaptureMutex);
-    videoCaptureEnabled = enabled;
-    if (!enabled) { captureFrame.clear(); captureFrame.shrink_to_fit(); captureW = captureH = 0; }
+    if (!videoCaptureEnabled) return;
+    captureW = w;
+    captureH = h;
+    captureFrame.resize((size_t) w * h);
+    std::memcpy(captureFrame.data(), rgba, (size_t) w * h * 4);
+    captureIsGl = true;
+    filteredDelivering = true;
+    captureSeq++;
+}
+
+std::pair<int, int> LibretroDroid::getDisplayedSize() {
+    if (!video) return { 0, 0 };
+    return video->getDisplayedSize();
 }
 
 // Copies one emulator frame (any libretro pixel format) as 0x00RRGGBB. Runs on the emulation thread,
@@ -613,6 +664,7 @@ void LibretroDroid::captureVideoFrame(const void* data, unsigned width, unsigned
     std::lock_guard<std::mutex> lock(videoCaptureMutex);
     if (width == 0 || height == 0) return;
     captureW = (int) width; captureH = (int) height;
+    captureIsGl = false;
     captureFrame.resize((size_t) width * height);
     int format = Environment::getInstance().getPixelFormat();
     const uint8_t* src = static_cast<const uint8_t*>(data);
@@ -642,23 +694,32 @@ void LibretroDroid::captureVideoFrame(const void* data, unsigned width, unsigned
 }
 
 int64_t LibretroDroid::readCapturedFrameI420(uint8_t* dst, int dstW, int dstH) {
-    std::vector<uint32_t> frame;
     int w, h;
     int64_t seq;
+    bool gl;
     {
         std::lock_guard<std::mutex> lock(videoCaptureMutex);
-        if (captureFrame.empty() || captureW == 0 || captureH == 0) return -1;
-        frame = captureFrame; w = captureW; h = captureH; seq = captureSeq;
+        if (captureW == 0 || captureH == 0) return -1;
+        if (captureSeq == readerSeq) return readerSeq;   // nothing new
+        if (captureFrame.size() < (size_t) captureW * captureH) return -1;
+        readerFrame.swap(captureFrame);
+        w = captureW; h = captureH; seq = captureSeq; gl = captureIsGl;
+        readerSeq = seq;
     }
+    const std::vector<uint32_t>& frame = readerFrame;
     uint8_t* yPlane = dst;
     uint8_t* uPlane = dst + dstW * dstH;
     uint8_t* vPlane = uPlane + (dstW / 2) * (dstH / 2);
     for (int y = 0; y < dstH; y++) {
-        const uint32_t* srcRow = &frame[(size_t) ((int64_t) y * h / dstH) * w];
+        int sy = (int) ((int64_t) y * h / dstH);
+        if (gl) sy = h - 1 - sy;   // GPU rows are bottom-up
+        const uint32_t* srcRow = &frame[(size_t) sy * w];
         uint8_t* yRow = yPlane + y * dstW;
         for (int x = 0; x < dstW; x++) {
             uint32_t c = srcRow[(int64_t) x * w / dstW];
-            int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+            int r, g, b;
+            if (gl) { r = c & 0xFF; g = (c >> 8) & 0xFF; b = (c >> 16) & 0xFF; }
+            else { r = (c >> 16) & 0xFF; g = (c >> 8) & 0xFF; b = c & 0xFF; }
             yRow[x] = (uint8_t) (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
             if ((y & 1) == 0 && (x & 1) == 0) {
                 int i = (y / 2) * (dstW / 2) + (x / 2);

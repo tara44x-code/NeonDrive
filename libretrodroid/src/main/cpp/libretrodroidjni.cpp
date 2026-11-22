@@ -665,6 +665,20 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getCapture
     env->SetIntArrayRegion(out, 0, 2, v);
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setFilteredCapture(
+    JNIEnv* env, jclass obj, jint width, jint height
+) {
+    LibretroDroid::getInstance().setFilteredCapture(width, height);
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getDisplayedSize(
+    JNIEnv* env, jclass obj, jintArray out
+) {
+    auto size = LibretroDroid::getInstance().getDisplayedSize();
+    jint v[2] = { size.first, size.second };
+    env->SetIntArrayRegion(out, 0, 2, v);
+}
+
 JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getCoreSampleRate(
     JNIEnv* env,
     jclass obj

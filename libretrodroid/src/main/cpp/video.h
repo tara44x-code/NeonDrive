@@ -19,6 +19,10 @@
 #define LIBRETRODROID_VIDEO_H
 
 #include <GLES2/gl2.h>
+#include <functional>
+#include <mutex>
+#include <vector>
+#include <array>
 #include <optional>
 #include <array>
 
@@ -34,6 +38,17 @@ class Video {
 public:
     /** NeonDrive: game area on screen, 0..1, bottom-left origin: xMin, yMin, xMax, yMax. */
     std::array<float, 4> getForegroundBounds() { return videoLayout.getRelativeForegroundBounds(); }
+
+    /** NeonDrive: size in pixels of the game picture as shown on screen. */
+    std::pair<int, int> getDisplayedSize() {
+        auto b = videoLayout.getRelativeForegroundBounds();
+        return { (int) ((b[2] - b[0]) * videoLayout.getScreenWidth()), (int) ((b[3] - b[1]) * videoLayout.getScreenHeight()) };
+    }
+
+    /** NeonDrive: rows are bottom-up RGBA, exactly as the shaders drew them. */
+    using CaptureSink = std::function<void(const uint8_t* rgba, int w, int h)>;
+    /** Draws the final (filtered) pass again at w x h for the video recorder; w = 0 stops it. */
+    void setFilteredCapture(int w, int h, CaptureSink sink);
 
     struct RenderingOptions {
         bool hardwareAccelerated = false;
@@ -91,6 +106,22 @@ public:
 
 private:
     void updateProgram();
+    void drawPass(int i, unsigned int framebuffer, int viewW, int viewH, const float* vertices, float density);
+    void captureFiltered();
+    void releaseCapture();
+
+    std::mutex capLock;
+    int capReqW = 0, capReqH = 0;
+    CaptureSink capSink;
+    int capW = 0, capH = 0;
+    GLuint capFbo = 0, capTex = 0;
+    GLuint capPbo[2] = { 0, 0 };
+    int capPboIdx = 0;
+    bool capPboReady = false;
+    bool capFailed = false;
+    std::vector<uint8_t> capTmp;
+    std::array<float, 12> capVertices {};
+    int glesVersion = 2;
 
     float getScreenDensity();
     float getTextureWidth();

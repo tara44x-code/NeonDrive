@@ -16,6 +16,8 @@
  */
 
 #include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
+#include <cstring>
 #include <EGL/egl.h>
 #include <cstdlib>
 #include <string>
@@ -165,57 +167,180 @@ void Video::renderFrame() {
 
     updateProgram();
     for (int i = 0; i < shadersChain.size(); ++i) {
-        auto shader = shadersChain[i];
         auto passData = renderer->getPassData(i);
         auto isLastPass = i == shadersChain.size() - 1;
-
-        glBindFramebuffer(GL_FRAMEBUFFER, passData.framebuffer.value_or(0));
-
-        glViewport(
-            0,
-            0,
-            passData.width.value_or(videoLayout.getScreenWidth()),
-            passData.height.value_or(videoLayout.getScreenHeight())
-        );
-
-        glUseProgram(shader.gProgram);
-
         auto vertices = isLastPass ? videoLayout.getForegroundVertices() : videoLayout.getFramebufferVertices();
-        glVertexAttribPointer(shader.gvPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, vertices.data());
-        glEnableVertexAttribArray(shader.gvPositionHandle);
-
-        auto coordinates = videoLayout.getTextureCoordinates();
-        glVertexAttribPointer(shader.gvCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, coordinates.data());
-        glEnableVertexAttribArray(shader.gvCoordinateHandle);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, renderer->getTexture());
-        glUniform1i(shader.gTextureHandle, 0);
-
-        if (shader.gPreviousPassTextureHandle != -1 && passData.texture.has_value()) {
-            glActiveTexture(GL_TEXTURE0 + 1);
-            glBindTexture(GL_TEXTURE_2D, passData.texture.value());
-            glUniform1i(shader.gPreviousPassTextureHandle, 1);
-        }
-
-        glUniform2f(shader.gTextureSizeHandle, getTextureWidth(), getTextureHeight());
-
-        glUniform1f(shader.gScreenDensityHandle, getScreenDensity());
-
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-
-        glDisableVertexAttribArray(shader.gvPositionHandle);
-        glDisableVertexAttribArray(shader.gvCoordinateHandle);
-
-        if (shader.gPreviousPassTextureHandle != -1 && passData.texture.has_value()) {
-            glActiveTexture(GL_TEXTURE0 + 1);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        glUseProgram(0);
+        drawPass(
+            i,
+            passData.framebuffer.value_or(0),
+            passData.width.value_or(videoLayout.getScreenWidth()),
+            passData.height.value_or(videoLayout.getScreenHeight()),
+            vertices.data(),
+            getScreenDensity()
+        );
     }
+
+    captureFiltered();
+}
+
+void Video::drawPass(int i, unsigned int framebuffer, int viewW, int viewH, const float* vertices, float density) {
+    auto shader = shadersChain[i];
+    auto passData = renderer->getPassData(i);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glViewport(0, 0, viewW, viewH);
+
+    glUseProgram(shader.gProgram);
+
+    glVertexAttribPointer(shader.gvPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glEnableVertexAttribArray(shader.gvPositionHandle);
+
+    auto coordinates = videoLayout.getTextureCoordinates();
+    glVertexAttribPointer(shader.gvCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, coordinates.data());
+    glEnableVertexAttribArray(shader.gvCoordinateHandle);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderer->getTexture());
+    glUniform1i(shader.gTextureHandle, 0);
+
+    if (shader.gPreviousPassTextureHandle != -1 && passData.texture.has_value()) {
+        glActiveTexture(GL_TEXTURE0 + 1);
+        glBindTexture(GL_TEXTURE_2D, passData.texture.value());
+        glUniform1i(shader.gPreviousPassTextureHandle, 1);
+    }
+
+    glUniform2f(shader.gTextureSizeHandle, getTextureWidth(), getTextureHeight());
+
+    glUniform1f(shader.gScreenDensityHandle, density);
+
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    glDisableVertexAttribArray(shader.gvPositionHandle);
+    glDisableVertexAttribArray(shader.gvCoordinateHandle);
+
+    if (shader.gPreviousPassTextureHandle != -1 && passData.texture.has_value()) {
+        glActiveTexture(GL_TEXTURE0 + 1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glUseProgram(0);
+}
+
+void Video::setFilteredCapture(int w, int h, CaptureSink sink) {
+    std::lock_guard<std::mutex> lock(capLock);
+    capReqW = w > 0 && h > 0 ? w : 0;
+    capReqH = capReqW > 0 ? h : 0;
+    capSink = capReqW > 0 ? std::move(sink) : nullptr;
+    capFailed = false;
+}
+
+void Video::releaseCapture() {
+    if (capPbo[0] != 0) glDeleteBuffers(2, capPbo);
+    if (capFbo != 0) glDeleteFramebuffers(1, &capFbo);
+    if (capTex != 0) glDeleteTextures(1, &capTex);
+    capPbo[0] = capPbo[1] = 0;
+    capFbo = capTex = 0;
+    capW = capH = 0;
+    capPboReady = false;
+    capTmp.clear();
+    capTmp.shrink_to_fit();
+}
+
+// The recorder gets the picture exactly as the player sees it (xBRZ/xBR/colour settings
+// included): the last shader pass is drawn once more into an off-screen frame at the video
+// size, then read back through two pixel buffers so the GPU never waits for the CPU.
+void Video::captureFiltered() {
+    int reqW, reqH;
+    CaptureSink sink;
+    {
+        std::lock_guard<std::mutex> lock(capLock);
+        reqW = capFailed ? 0 : capReqW;
+        reqH = capFailed ? 0 : capReqH;
+        sink = capSink;
+    }
+    if (reqW == 0 || !sink || shadersChain.empty()) {
+        if (capFbo != 0) releaseCapture();
+        return;
+    }
+
+    if (reqW != capW || reqH != capH || capFbo == 0) {
+        releaseCapture();
+        glGenTextures(1, &capTex);
+        glBindTexture(GL_TEXTURE_2D, capTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, reqW, reqH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glGenFramebuffers(1, &capFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, capFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capTex, 0);
+        bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (!complete) {
+            LOGE("Filtered capture: framebuffer incomplete, recorder keeps the raw frames");
+            releaseCapture();
+            std::lock_guard<std::mutex> lock(capLock);
+            capFailed = true;
+            return;
+        }
+        capW = reqW;
+        capH = reqH;
+        if (glesVersion >= 3) {
+            glGenBuffers(2, capPbo);
+            for (unsigned int pbo : capPbo) {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+                glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr) capW * capH * 4, nullptr, GL_STREAM_READ);
+            }
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        }
+    }
+
+    // Same orientation and rotation as on screen, stretched over the whole capture frame.
+    auto& fg = videoLayout.getForegroundVertices();
+    float xMin = fg[0], xMax = fg[0], yMin = fg[1], yMax = fg[1];
+    for (int i = 0; i < 12; i += 2) {
+        xMin = std::min(xMin, fg[i]); xMax = std::max(xMax, fg[i]);
+        yMin = std::min(yMin, fg[i + 1]); yMax = std::max(yMax, fg[i + 1]);
+    }
+    float cx = (xMin + xMax) / 2.0F, cy = (yMin + yMax) / 2.0F;
+    float hx = std::max((xMax - xMin) / 2.0F, 1e-6F), hy = std::max((yMax - yMin) / 2.0F, 1e-6F);
+    for (int i = 0; i < 12; i += 2) {
+        capVertices[i] = (fg[i] - cx) / hx;
+        capVertices[i + 1] = (fg[i + 1] - cy) / hy;
+    }
+
+    float density = std::min(capW / getTextureWidth(), capH / getTextureHeight());
+    drawPass((int) shadersChain.size() - 1, capFbo, capW, capH, capVertices.data(), density);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, capFbo);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    size_t bytes = (size_t) capW * capH * 4;
+    if (capPbo[0] != 0) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, capPbo[capPboIdx]);
+        glReadPixels(0, 0, capW, capH, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        int previous = capPboIdx ^ 1;
+        if (capPboReady) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, capPbo[previous]);
+            void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr) bytes, GL_MAP_READ_BIT);
+            if (pixels != nullptr) {
+                sink(static_cast<const uint8_t*>(pixels), capW, capH);
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            }
+        }
+        capPboReady = true;
+        capPboIdx = previous;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    } else {
+        capTmp.resize(bytes);
+        glReadPixels(0, 0, capW, capH, GL_RGBA, GL_UNSIGNED_BYTE, capTmp.data());
+        sink(capTmp.data(), capW, capH);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, videoLayout.getScreenWidth(), videoLayout.getScreenHeight());
 }
 
 float Video::getScreenDensity() {
@@ -274,6 +399,8 @@ Video::Video(
     immersiveModeEnabled(immersiveModeEnabled),
     immersiveMode(immersiveModeConfig),
     videoLayout(bottomLeftOrigin, rotation, viewportRect, viewportAlignment) {
+
+    glesVersion = renderingOptions.openglESVersion;
 
     printGLString("Version", GL_VERSION);
     printGLString("Vendor", GL_VENDOR);

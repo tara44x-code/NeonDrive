@@ -136,6 +136,9 @@ public:
     int readCapturedAudio(int16_t* out, int maxSamples);
     int getCoreSampleRate() const { return coreSampleRate; }
     void setVideoCapture(bool enabled);
+    /** Record the filtered on-screen picture at w x h (0 = raw game frames). */
+    void setFilteredCapture(int w, int h);
+    std::pair<int, int> getDisplayedSize();
 
     // NeonDrive: two-player netplay (lockstep)
     Netplay netplay;
@@ -184,6 +187,13 @@ private:
     int captureW = 0;
     int captureH = 0;
     int64_t captureSeq = 0;
+    bool captureIsGl = false;            // captureFrame holds bottom-up RGBA from the GPU
+    bool filteredDelivering = false;
+    int filteredW = 0, filteredH = 0;
+    std::vector<uint32_t> readerFrame;   // swapped with captureFrame, never copied
+    int64_t readerSeq = -1;
+    void onFilteredFrame(const uint8_t* rgba, int w, int h);
+    void applyFilteredCapture();
     void captureVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch);
     std::vector<int16_t> captureBuffer;
     bool captureEnabled = false;

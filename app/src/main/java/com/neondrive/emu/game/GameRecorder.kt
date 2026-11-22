@@ -66,11 +66,15 @@ class GameRecorder(private val outFile: File, private val maxLines: Int) {
     // ------------------------------------------------------------ video
 
     /** Largest whole-number scale of the game frame that the encoder accepts. */
-    private fun setupVideo(gameW: Int, gameH: Int) {
+    private fun setupVideo(gameW: Int, gameH: Int, shownAspect: Float) {
+        // Whole-number multiple of the game's lines, with the width of the picture as it is shown
+        // (4:3, 16:9, ...) so the video looks exactly like the screen.
+        val aspect = if (shownAspect in 0.5f..3.5f) shownAspect else gameW.toFloat() / gameH
         var k = maxOf(1, maxLines / gameH)
-        while (k > 1 && gameW * k > 1920) k--
-        encW = (gameW * k) / 16 * 16
+        while (k > 1 && gameH * k * aspect > 1920) k--
         encH = (gameH * k) / 16 * 16
+        encW = (minOf(1920f, encH * aspect).toInt() + 8) / 16 * 16
+        encW = encW.coerceIn(16, 1920)
         // Pixel art needs plenty of bits: ~0.3 bit per pixel per frame, 16-30 Mbps.
         val bitrate = (encW.toLong() * encH * 60 * 3 / 10).coerceIn(16_000_000, 30_000_000).toInt()
         val mime = MediaFormat.MIMETYPE_VIDEO_AVC
@@ -129,7 +133,13 @@ class GameRecorder(private val outFile: File, private val maxLines: Int) {
             Thread.sleep(10)
         }
         if (size[0] <= 0 || size[1] <= 0) { size[0] = 320; size[1] = 224 }
-        try { setupVideo(size[0], size[1]) } catch (e: Exception) { return }
+        val shown = IntArray(2)
+        runCatching { LibretroDroid.getDisplayedSize(shown) }
+        val shownAspect = if (shown[0] > 0 && shown[1] > 0) shown[0].toFloat() / shown[1] else 0f
+        try { setupVideo(size[0], size[1], shownAspect) } catch (e: Exception) { return }
+        // From now on the GPU hands over the picture with the player's filter (xBRZ, xBR,
+        // colours...) already applied, drawn straight at the video size.
+        runCatching { LibretroDroid.setFilteredCapture(encW, encH) }
 
         val frameSize = encW * encH * 3 / 2
         val direct = ByteBuffer.allocateDirect(frameSize)

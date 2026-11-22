@@ -107,6 +107,10 @@ public class LibretroDroid {
     public static native int getCoreSampleRate();
     public static native void setVideoCapture(boolean enabled);
     public static native void getCapturedFrameSize(int[] out);
+    /** Records the filtered picture (as shown on screen) at width x height; 0 = raw frames. */
+    public static native void setFilteredCapture(int width, int height);
+    /** Size in pixels of the game picture on screen. */
+    public static native void getDisplayedSize(int[] out);
 
     // NeonDrive: two-player netplay (lockstep)
     public static native void netplayStart(boolean host, int delay);
