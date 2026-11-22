@@ -119,7 +119,8 @@ class NetplaySessionTest {
 
     @Test
     fun twoPhonesStayInSyncAndRecoverFromDesync() {
-        val net = Executors.newScheduledThreadPool(2)
+        // One delivery thread: messages arrive in order, like TCP / a WebSocket.
+        val net = Executors.newSingleThreadScheduledExecutor()
         val link = FakeLink(net, maxLatencyMs = 15, seed = 7)
         val hostEmu = FakeEmu(1, checkEvery = 120)
         val guestEmu = FakeEmu(2, checkEvery = 120)
@@ -154,10 +155,12 @@ class NetplaySessionTest {
         }
         emuThreads.forEach { it.join(30_000) }
 
-        assertEquals("no disconnect expected", 0, ended.get())
-        assertTrue("desync must trigger an automatic resync", hostEmu.starts >= 2 && guestEmu.starts >= 2)
-        assertEquals("both phones at the same frame", hostEmu.frame, guestEmu.frame)
-        assertEquals("identical game state after resync", hostEmu.state, guestEmu.state)
+        val info = "host(frame=${hostEmu.frame}, starts=${hostEmu.starts}) guest(frame=${guestEmu.frame}, starts=${guestEmu.starts}) resyncs=${resyncs.get()}"
+        assertEquals("no disconnect expected; $info", 0, ended.get())
+        assertTrue("desync must trigger an automatic resync; $info", hostEmu.starts >= 2 && guestEmu.starts >= 2)
+        assertEquals("exactly one resync expected; $info", hostEmu.starts, guestEmu.starts)
+        assertEquals("both phones at the same frame; $info", hostEmu.frame, guestEmu.frame)
+        assertEquals("identical game state after resync; $info", hostEmu.state, guestEmu.state)
         host.close(); guest.close(); net.shutdownNow()
     }
 }
