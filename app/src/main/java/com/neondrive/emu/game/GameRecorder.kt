@@ -27,6 +27,10 @@ class GameRecorder(private val outFile: File, private val maxLines: Int) {
 
     private var encW = 0
     private var encH = 0
+    /** Encoder mode actually used (for the diagnostics report). */
+    @Volatile var chosenMode = "?"
+        private set
+    val videoSize: String get() = "${encW}x$encH"
 
     private val lock = Any()
     private lateinit var muxer: MediaMuxer
@@ -67,12 +71,20 @@ class GameRecorder(private val outFile: File, private val maxLines: Int) {
         while (k > 1 && gameW * k > 1920) k--
         encW = (gameW * k) / 16 * 16
         encH = (gameH * k) / 16 * 16
-        // Pixel art needs plenty of bits: ~0.3 bit per pixel per frame, 12-30 Mbps.
-        val bitrate = (encW.toLong() * encH * 60 * 3 / 10).coerceIn(12_000_000, 30_000_000).toInt()
-        fun format(highProfile: Boolean) = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encW, encH).apply {
+        // Pixel art needs plenty of bits: ~0.3 bit per pixel per frame, 16-30 Mbps.
+        val bitrate = (encW.toLong() * encH * 60 * 3 / 10).coerceIn(16_000_000, 30_000_000).toInt()
+        val mime = MediaFormat.MIMETYPE_VIDEO_AVC
+        val CQ = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ
+        val CBR = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+        val VBR = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+
+        // Many phone encoders ignore the bitrate in VBR mode and drop to ~1 Mbps (blurry pixel art).
+        // Use what the encoder really supports: constant quality (max), else constant bitrate.
+        fun format(mode: Int, highProfile: Boolean, quality: Int?) = MediaFormat.createVideoFormat(mime, encW, encH).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, mode)
+            if (mode == CQ && quality != null && android.os.Build.VERSION.SDK_INT >= 28) setInteger(MediaFormat.KEY_QUALITY, quality)
             setInteger(MediaFormat.KEY_FRAME_RATE, 60)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
             if (highProfile) {
@@ -80,16 +92,29 @@ class GameRecorder(private val outFile: File, private val maxLines: Int) {
                 setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel42)
             }
         }
-        // Prefer High profile (more detail for the same size); fall back to the encoder's default.
-        val codec = try {
-            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).also {
-                it.configure(format(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            }
-        } catch (e: Exception) {
-            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).also {
-                it.configure(format(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+
+        val probe = MediaCodec.createEncoderByType(mime)
+        val caps = runCatching { probe.codecInfo.getCapabilitiesForType(mime).encoderCapabilities }.getOrNull()
+        probe.release()
+        val quality = if (android.os.Build.VERSION.SDK_INT >= 28) runCatching { caps?.qualityRange?.upper }.getOrNull() else null
+        val modes = buildList {
+            if (caps?.isBitrateModeSupported(CQ) == true && quality != null) add(CQ)
+            if (caps?.isBitrateModeSupported(CBR) == true) add(CBR)
+            add(VBR)
+        }
+        var codec: MediaCodec? = null
+        loop@ for (mode in modes) for (high in listOf(true, false)) {
+            val c = MediaCodec.createEncoderByType(mime)
+            try {
+                c.configure(format(mode, high, quality), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                codec = c
+                chosenMode = when (mode) { CQ -> "CQ"; CBR -> "CBR"; else -> "VBR" } + if (high) "/High" else ""
+                break@loop
+            } catch (e: Exception) {
+                c.release()
             }
         }
+        codec ?: throw IllegalStateException("no H.264 encoder configuration accepted")
         codec.start()
         videoCodec = codec
     }

@@ -610,6 +610,23 @@ JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayPol
     return n;
 }
 
+JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayPollChecks(
+    JNIEnv* env, jclass obj, jlongArray frames, jintArray crcs
+) {
+    jsize max = std::min(env->GetArrayLength(frames), env->GetArrayLength(crcs));
+    std::vector<int64_t> f(max);
+    std::vector<uint32_t> c(max);
+    int n = LibretroDroid::getInstance().netplay.pollChecks(f.data(), c.data(), max);
+    if (n > 0) {
+        std::vector<jlong> jf(f.begin(), f.begin() + n);
+        std::vector<jint> jc(n);
+        for (int i = 0; i < n; i++) jc[i] = (jint) c[i];
+        env->SetLongArrayRegion(frames, 0, n, jf.data());
+        env->SetIntArrayRegion(crcs, 0, n, jc.data());
+    }
+    return n;
+}
+
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netplayStatus(
     JNIEnv* env, jclass obj, jlongArray out
 ) {

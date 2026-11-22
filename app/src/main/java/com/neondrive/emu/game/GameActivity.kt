@@ -555,7 +555,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             pendingFrame = grabFrame()
             withContext(Dispatchers.Default) { saveSram(); saveAutoState() }
             pendingFrame?.let { f -> withContext(Dispatchers.IO) { writeThumb(f, thumbFile(stateFile(this@GameActivity, game, AUTO_SLOT, wideCore))) } }
-            menuLauncher.launch(GameMenuActivity.intent(this@GameActivity, game, netStatus))
+            menuLauncher.launch(GameMenuActivity.intent(this@GameActivity, game, netStatus, netCode))
             menuOpening = false
         }
     }
@@ -625,6 +625,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 data.getIntExtra(GameMenuActivity.RES_NET_PORT, com.neondrive.emu.net.NetplaySession.PORT),
             )
             GameMenuActivity.ACTION_NET_STOP -> stopNetplay("انتهى اللعب الزوجي")
+            GameMenuActivity.ACTION_NET_HOST_ONLINE -> startHostingOnline()
+            GameMenuActivity.ACTION_NET_JOIN_ONLINE -> startJoiningOnline(data.getStringExtra(GameMenuActivity.RES_NET_CODE) ?: return)
+            GameMenuActivity.ACTION_NET_SHARE -> shareRoomCode()
             GameMenuActivity.ACTION_EDIT_LAYOUT -> { editingLayout = true; message = "اسحب أي مجموعة لمكانها، واضغط عليها حتى تغيّر حجمها" }
             GameMenuActivity.ACTION_SCREENSHOT -> pendingFrame?.let { saveScreenshot(it) } ?: takeScreenshot()
         }
@@ -676,22 +679,27 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     // ---------- Two-player over Wi-Fi ----------
 
+    private var netCode by mutableStateOf<String?>(null)     // online room code (to share)
+
     private val netListener = object : com.neondrive.emu.net.NetplaySession.Listener {
         override fun onEmulationThread(block: () -> Unit) = this@GameActivity.onEmulationThread(block)
-        override fun onWaiting(address: String) {
-            netStatus = "بانتظار اللاعب الثاني • $address"
-        }
-        override fun onConnected(peer: String, asHost: Boolean) {
+        override fun onWaiting(info: String) { netStatus = info }
+        override fun onConnected(asHost: Boolean, online: Boolean) {
             netConnected = true
-            netStatus = if (asHost) "متصل • إنت اللاعب 1" else "متصل • إنت اللاعب 2"
+            val where = if (online) "🌐 أونلاين" else "📶 وايفاي"
+            netStatus = if (asHost) "$where • إنت اللاعب 1" else "$where • إنت اللاعب 2"
             message = if (asHost) "👥 دخل اللاعب الثاني! إنت اللاعب 1" else "👥 اتصلت! إنت اللاعب 2"
-            CrashReporter.crumb("netplay connected host=$asHost")
+            CrashReporter.crumb("netplay connected host=$asHost online=$online")
             synchronized(rewindBuffer) { rewindBuffer.clear() }
         }
         override fun onPing(ms: Int) { netPing = ms }
+        override fun onResync(reason: String) {
+            message = "🔄 $reason"
+            CrashReporter.crumb("netplay resync: $reason")
+        }
         override fun onEnded(reason: String) {
             runOnUiThread {
-                netSession = null; netStatus = null; netConnected = false; netPing = -1; netWaitingForPeer = false
+                netSession = null; netStatus = null; netConnected = false; netPing = -1; netWaitingForPeer = false; netCode = null
                 message = reason
                 CrashReporter.crumb("netplay ended: $reason")
             }
@@ -707,27 +715,62 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         LibretroDroid.setFrameSpeed(1)
     }
 
+    private fun newSession() = com.neondrive.emu.net.NetplaySession(
+        game.crc, game.title, netListener, context = applicationContext,
+    )
+
+    private fun relayUrl(): String = settings.relayUrl.ifBlank { com.neondrive.emu.BuildConfig.RELAY_URL }
+
+    /** Wi-Fi: this phone is player 1 and waits on the local network. */
     private fun startHosting() {
         if (netSession != null || !coreReady) return
-        val s = com.neondrive.emu.net.NetplaySession(this, game.crc, game.title, netListener)
-        netSession = s
-        netStatus = "يجهّز السيرفر…"
-        s.host(captureState = { prepareNetplayCore(); retroView.serializeState(false) })
+        netSession = newSession().also { s ->
+            netStatus = "يجهّز السيرفر…"
+            s.hostLan(capture = { prepareNetplayCore(); retroView.serializeState(false) })
+        }
         watchNetplay()
     }
 
     private fun startJoining(address: String, port: Int) {
         if (netSession != null || !coreReady) return
-        val s = com.neondrive.emu.net.NetplaySession(this, game.crc, game.title, netListener)
-        netSession = s
-        netStatus = "يتصل بـ $address…"
-        s.join(address, port) { state -> prepareNetplayCore(); retroView.unserializeState(state, false) }
+        netSession = newSession().also { s ->
+            netStatus = "يتصل بـ $address…"
+            s.joinLan(address, port) { state -> prepareNetplayCore(); retroView.unserializeState(state, false) }
+        }
         watchNetplay()
+    }
+
+    /** Internet: creates a room code on the relay; the other player enters it. */
+    private fun startHostingOnline() {
+        if (netSession != null || !coreReady) return
+        val code = com.neondrive.emu.net.NetplaySession.newRoomCode()
+        netCode = code
+        netSession = newSession().also { s ->
+            netStatus = "يتصل بسيرفر الأونلاين…"
+            s.hostOnline(relayUrl(), code, capture = { prepareNetplayCore(); retroView.serializeState(false) })
+        }
+        message = "كود الغرفة: $code — ارسله للاعب الثاني"
+        watchNetplay()
+    }
+
+    private fun startJoiningOnline(code: String) {
+        if (netSession != null || !coreReady) return
+        netSession = newSession().also { s ->
+            netStatus = "يدخل الغرفة $code…"
+            s.joinOnline(relayUrl(), code.uppercase()) { state -> prepareNetplayCore(); retroView.unserializeState(state, false) }
+        }
+        watchNetplay()
+    }
+
+    private fun shareRoomCode() {
+        val code = netCode ?: return
+        val text = "تعال نلعب ${game.title} أونلاين على NeonDrive 🎮\nكود الغرفة: $code"
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "مشاركة كود الغرفة"))
     }
 
     private fun stopNetplay(reason: String) {
         netSession?.close()
-        netSession = null; netStatus = null; netConnected = false; netPing = -1; netWaitingForPeer = false
+        netSession = null; netStatus = null; netConnected = false; netPing = -1; netWaitingForPeer = false; netCode = null
         message = reason
     }
 
@@ -753,8 +796,10 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             else -> "👥 متصل"
         }
         Text(
-            text, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+            text + if (!netConnected && netCode != null) "  ↗" else "",
+            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1,
             modifier = modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.55f))
+                .clickable(enabled = netCode != null && !netConnected) { shareRoomCode() }
                 .padding(horizontal = 10.dp, vertical = 4.dp),
         )
     }
@@ -788,7 +833,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             val ok = rec.stop()
             val saved = save && ok && file != null && MediaSaver.saveVideo(this@GameActivity, file, file.nameWithoutExtension)
             file?.delete()
-            CrashReporter.crumb("recording stopped saved=$saved")
+            CrashReporter.crumb("recording stopped saved=$saved size=${rec.videoSize} mode=${rec.chosenMode}")
             if (save) message = if (saved) "🎬 تم حفظ الفيديو بالمعرض (Movies/NeonDrive)" else "تعذر حفظ الفيديو"
         }
     }

@@ -31,7 +31,7 @@ public:
         frame = 0;
         localQueued = false;
         stalls = 0;
-        local.clear(); remote.clear(); outbox.clear();
+        local.clear(); remote.clear(); outbox.clear(); checks.clear();
         // The first `delay` frames run with no buttons on both sides.
         for (int64_t f = 0; f < delay; f++) { local[f] = 0; remote[f] = 0; }
         cv.notify_all();
@@ -110,6 +110,32 @@ public:
         return n;
     }
 
+    /** Frames between state checksums (~10 s at 60 fps). */
+    static constexpr int64_t CHECK_EVERY = 600;
+
+    int64_t currentFrame() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return frame;
+    }
+
+    /** Emulation thread: checksum of the state at the start of [atFrame]. */
+    void pushCheck(int64_t atFrame, uint32_t crc) {
+        std::lock_guard<std::mutex> lock(mutex);
+        checks.emplace_back(atFrame, crc);
+        while (checks.size() > 16) checks.pop_front();
+    }
+
+    /** Network thread: checksums to send. */
+    int pollChecks(int64_t* frames, uint32_t* crcs, int max) {
+        std::lock_guard<std::mutex> lock(mutex);
+        int n = 0;
+        while (n < max && !checks.empty()) {
+            frames[n] = checks.front().first; crcs[n] = checks.front().second;
+            checks.pop_front(); n++;
+        }
+        return n;
+    }
+
     /** [current frame, total stalls, stalls in a row] */
     void status(int64_t out[3]) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -129,6 +155,7 @@ private:
     std::unordered_map<int64_t, uint16_t> local;
     std::unordered_map<int64_t, uint16_t> remote;
     std::deque<std::pair<int64_t, uint16_t>> outbox;
+    std::deque<std::pair<int64_t, uint32_t>> checks;
 };
 
 } // namespace libretrodroid

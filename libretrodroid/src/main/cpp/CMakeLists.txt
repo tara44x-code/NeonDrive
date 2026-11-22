@@ -104,4 +104,5 @@ target_link_libraries(libretrodroid
                       EGL
                       oboe
                       GLESv3
+                      z
 )

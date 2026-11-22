@@ -5,62 +5,74 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import com.swordfish.libretrodroid.LibretroDroid
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
-import java.io.IOException
+import kotlinx.coroutines.runBlocking
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+import kotlin.math.ceil
+
+/** What the session needs from the emulator (swappable for tests). */
+interface NetEngine {
+    fun start(host: Boolean, delay: Int)
+    fun stop()
+    fun pushRemote(frame: Long, mask: Int)
+    fun pollLocal(frames: LongArray, masks: IntArray): Int
+    fun pollChecks(frames: LongArray, crcs: IntArray): Int
+    fun resetCheats()
+}
+
+object LibretroEngine : NetEngine {
+    override fun start(host: Boolean, delay: Int) = LibretroDroid.netplayStart(host, delay)
+    override fun stop() = LibretroDroid.netplayStop()
+    override fun pushRemote(frame: Long, mask: Int) = LibretroDroid.netplayPushRemote(frame, mask)
+    override fun pollLocal(frames: LongArray, masks: IntArray) = LibretroDroid.netplayPollLocal(frames, masks)
+    override fun pollChecks(frames: LongArray, crcs: IntArray) = LibretroDroid.netplayPollChecks(frames, crcs)
+    override fun resetCheats() = LibretroDroid.resetCheat()
+}
 
 /**
- * Two-player netplay over the local Wi-Fi (or a phone hotspot).
+ * Two-player netplay, on the home Wi-Fi (TCP) or over the internet (room code via the relay).
  *
- * Host = player 1, guest = player 2. The guest connects, both check they have the same game
- * (CRC), the host sends its exact game state, then both switch the engine to lockstep and only
- * button presses travel over the network (a few bytes per frame).
- *
- * Protocol (TCP, big-endian):
- *   HELLO   1  int proto, utf crc, utf name        guest -> host
- *   WELCOME 2  int delay, int len, bytes state      host  -> guest
- *   REJECT  3  utf reason                           host  -> guest
- *   INPUT   4  long frame, short mask               both
- *   PING    5  long nanos                           both
- *   PONG    6  long nanos                           both
- *   BYE     7                                       both
+ * Host = player 1, guest = player 2. The guest says hello (same game CRC required), the host sends
+ * its exact state and both engines switch to lockstep: only buttons travel. Every ~10 s both send a
+ * checksum of the game state at the same frame; if they ever differ the host resends its state
+ * (a new "epoch") and play continues in sync. Inputs are tagged with the epoch, and nothing is sent
+ * for a new epoch until its state has gone out, so old and new never mix.
  */
 class NetplaySession(
-    private val context: Context,
     private val gameCrc: String,
     private val gameTitle: String,
     private val listener: Listener,
+    private val engine: NetEngine = LibretroEngine,
+    private val context: Context? = null,
 ) {
     interface Listener {
         /** Runs [block] on the emulation (GL) thread and waits for it. */
         fun onEmulationThread(block: () -> Unit)
-        fun onWaiting(address: String)
-        fun onConnected(peer: String, asHost: Boolean)
+        fun onWaiting(info: String)
+        fun onConnected(asHost: Boolean, online: Boolean)
         fun onPing(ms: Int)
+        fun onResync(reason: String)
         fun onEnded(reason: String)
     }
 
     companion object {
+        const val PROTO = 2
         const val PORT = 47_700
         const val SERVICE_TYPE = "_neondrive._tcp."
-        private const val PROTO = 1
-        const val INPUT_DELAY = 3          // frames (~50 ms) of slack for Wi-Fi latency
+        const val LAN_DELAY = 3          // frames (~50 ms)
+        const val ONLINE_DELAY = 5       // frames (~83 ms); raised automatically on slow links
+        const val MAX_DELAY = 10
+        private const val ONLINE_BATCH = 3
+        private const val ONLINE_FLUSH_NS = 25_000_000L
 
-        private const val HELLO: Byte = 1
-        private const val WELCOME: Byte = 2
-        private const val REJECT: Byte = 3
-        private const val INPUT: Byte = 4
-        private const val PING: Byte = 5
-        private const val PONG: Byte = 6
-        private const val BYE: Byte = 7
+        private const val ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        fun newRoomCode(): String = buildString { repeat(6) { append(ROOM_ALPHABET.random()) } }
 
         /** This phone's Wi-Fi / hotspot address, for showing and manual joining. */
         fun localAddress(): String? = runCatching {
@@ -75,163 +87,249 @@ class NetplaySession(
 
     @Volatile var active = false; private set
     @Volatile private var closed = false
+    @Volatile private var transport: Transport? = null
+    private var isHost = false
+    private var online = false
+    @Volatile private var epoch = 0
+    @Volatile private var delay = LAN_DELAY
+    @Volatile private var canSend = false
+    @Volatile private var rttMs = -1
+    private var lastDelayChange = 0L
+    private var captureState: (() -> ByteArray)? = null
+    private var applyState: ((ByteArray) -> Unit)? = null
+    private val myChecks = ConcurrentHashMap<Long, Int>()
+    private val peerChecks = ConcurrentHashMap<Long, Int>()
+    private val control = Executors.newSingleThreadExecutor()
+
     private var server: ServerSocket? = null
-    private var socket: Socket? = null
-    private var output: DataOutputStream? = null
-    private val writeLock = Any()
     private var nsd: NsdManager? = null
     private var registration: NsdManager.RegistrationListener? = null
     private var multicastLock: WifiManager.MulticastLock? = null
 
-    // ------------------------------------------------------------------ host
+    // ================================================================== start
 
-    /** Player 1: waits for a guest; the game keeps running normally until one joins. */
-    fun host(captureState: () -> ByteArray) {
-        thread(name = "netplay-host") {
+    fun hostLan(capture: () -> ByteArray) {
+        isHost = true; online = false; delay = LAN_DELAY; captureState = capture
+        thread(name = "netplay-lan-host") {
             try {
-                val ss = ServerSocket()
-                ss.reuseAddress = true
-                ss.bind(InetSocketAddress(PORT))
+                val ss = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(PORT)) }
                 server = ss
                 advertise()
-                listener.onWaiting(localAddress() ?: "؟")
-
+                listener.onWaiting("بانتظار اللاعب الثاني • ${localAddress() ?: "?"}")
                 val client = ss.accept()
                 unadvertise()
-                client.tcpNoDelay = true
-                socket = client
-                val input = DataInputStream(BufferedInputStream(client.getInputStream()))
-                val out = DataOutputStream(BufferedOutputStream(client.getOutputStream()))
-                output = out
-
-                if (input.readByte() != HELLO) throw IOException("bad hello")
-                val proto = input.readInt()
-                val crc = input.readUTF()
-                val peerName = input.readUTF()
-                if (proto != PROTO) { reject(out, "نسخة التطبيق مختلفة عند اللاعب الثاني، حدّثوا الاثنين"); return@thread }
-                if (!crc.equals(gameCrc, ignoreCase = true)) {
-                    reject(out, "اللعبة مختلفة! لازم نفس ملف اللعبة على الموبايلين"); return@thread
-                }
-
-                // Freeze one exact moment: state + switch to lockstep, in the same emulation tick.
-                var state = ByteArray(0)
-                listener.onEmulationThread {
-                    LibretroDroid.resetCheat()
-                    state = captureState()
-                    LibretroDroid.netplayStart(true, INPUT_DELAY)
-                }
-                synchronized(writeLock) {
-                    out.writeByte(WELCOME.toInt()); out.writeInt(INPUT_DELAY)
-                    out.writeInt(state.size); out.write(state); out.flush()
-                }
-                begin(input, peerName, asHost = true)
+                attach(TcpTransport(client))
             } catch (e: Exception) {
-                if (!closed) end("انقطع الاتصال: ${e.message ?: "خطأ بالشبكة"}")
+                if (!closed) end("تعذر تشغيل السيرفر: ${e.message ?: ""}")
             }
         }
     }
 
-    private fun reject(out: DataOutputStream, reason: String) {
-        runCatching { out.writeByte(REJECT.toInt()); out.writeUTF(reason); out.flush() }
+    fun joinLan(address: String, port: Int, apply: (ByteArray) -> Unit) {
+        isHost = false; online = false; applyState = apply
+        thread(name = "netplay-lan-join") {
+            try {
+                val s = Socket().apply { tcpNoDelay = true; connect(InetSocketAddress(address, port), 6_000) }
+                attach(TcpTransport(s))
+                send(NetMsg.Hello(PROTO, gameCrc, android.os.Build.MODEL ?: "Android"))
+            } catch (e: Exception) {
+                if (!closed) end("تعذر الاتصال بالمستضيف: ${e.message ?: ""}")
+            }
+        }
+    }
+
+    fun hostOnline(relayUrl: String, code: String, capture: () -> ByteArray) {
+        isHost = true; online = true; delay = ONLINE_DELAY; captureState = capture
+        attach(RelayTransport.connect(relayUrl, code, host = true) { relayEvent(it, code) })
+    }
+
+    fun joinOnline(relayUrl: String, code: String, apply: (ByteArray) -> Unit) {
+        isHost = false; online = true; applyState = apply
+        attach(RelayTransport.connect(relayUrl, code, host = false) { relayEvent(it, code) })
+    }
+
+    /** Test hook / shared path: use an already-connected transport. */
+    fun attachForTest(t: Transport, host: Boolean, capture: (() -> ByteArray)?, apply: ((ByteArray) -> Unit)?) {
+        isHost = host; online = !t.isLan; delay = if (t.isLan) LAN_DELAY else ONLINE_DELAY
+        captureState = capture; applyState = apply
+        attach(t)
+        if (!host) send(NetMsg.Hello(PROTO, gameCrc, "test"))
+    }
+
+    private fun relayEvent(event: String, code: String) {
+        when {
+            event == "open" -> listener.onWaiting(if (isHost) "كود الغرفة: $code • بانتظار اللاعب الثاني" else "يدخل الغرفة $code…")
+            event == "peer-present" -> if (!isHost) send(NetMsg.Hello(PROTO, gameCrc, android.os.Build.MODEL ?: "Android"))
+            event == "peer-joined" -> Unit // the guest says hello next
+            event == "peer-left" -> end("اللاعب الثاني طلع من الغرفة")
+            event == "no-host" -> end("ماكو غرفة بهذا الكود، تأكد منه")
+            event == "room-full" -> end("الغرفة مليانة")
+            event == "room-taken" -> end("الكود مستخدم، جرّب غرفة جديدة")
+            event == "closed" -> if (!closed) end("انقطع الاتصال بسيرفر الأونلاين")
+            event.startsWith("error:") -> if (!closed) end("تعذر الاتصال بسيرفر الأونلاين — تأكد من الإنترنت")
+        }
+    }
+
+    private fun attach(t: Transport) {
+        transport = t
+        thread(name = "netplay-read") {
+            runCatching {
+                runBlocking { for (bytes in t.incoming) handle(NetProtocol.decode(bytes) ?: continue) }
+            }
+            if (!closed) end("انقطع الاتصال باللاعب الثاني")
+        }
+    }
+
+    private fun send(m: NetMsg) { transport?.send(NetProtocol.encode(m)) }
+
+    // ================================================================== messages
+
+    private fun handle(m: NetMsg) {
+        when (m) {
+            is NetMsg.Hello -> if (isHost && !active) {
+                when {
+                    m.proto != PROTO -> reject("نسخة التطبيق مختلفة عند اللاعب الثاني، حدّثوا الاثنين")
+                    !m.gameCrc.equals(gameCrc, ignoreCase = true) -> reject("اللعبة مختلفة! لازم نفس ملف اللعبة على الموبايلين")
+                    else -> control.execute { startEpoch(first = true, reason = "") }
+                }
+            }
+            is NetMsg.Welcome -> if (!isHost) {
+                canSend = false
+                val state = NetProtocol.inflate(m.state)
+                delay = m.delay
+                listener.onEmulationThread {
+                    engine.resetCheats()
+                    applyState?.invoke(state)
+                    engine.start(false, m.delay)
+                }
+                epoch = m.epoch
+                myChecks.clear(); peerChecks.clear()
+                canSend = true
+                if (!active) {
+                    active = true
+                    startSender()
+                    listener.onConnected(asHost = false, online = online)
+                } else listener.onResync("تمت إعادة المزامنة")
+            }
+            is NetMsg.Reject -> end(m.reason)
+            is NetMsg.Input -> if (m.epoch == epoch) {
+                for (i in m.masks.indices) engine.pushRemote(m.first + i, m.masks[i].toInt() and 0xFFFF)
+            }
+            is NetMsg.Check -> if (m.epoch == epoch) { peerChecks[m.frame] = m.crc; compare(m.frame) }
+            is NetMsg.Ping -> send(NetMsg.Pong(m.time))
+            is NetMsg.Pong -> {
+                rttMs = ((System.nanoTime() - m.time) / 1_000_000L).toInt()
+                listener.onPing(rttMs)
+            }
+            NetMsg.Bye -> end("اللاعب الثاني طلع من اللعب الزوجي")
+        }
+    }
+
+    private fun reject(reason: String) {
+        send(NetMsg.Reject(reason))
         end(reason)
     }
 
-    // ------------------------------------------------------------------ guest
+    /** Host: freeze one exact state, restart lockstep from it, send it (new epoch). */
+    private fun startEpoch(first: Boolean, reason: String) {
+        if (closed) return
+        canSend = false
+        val nextEpoch = epoch + 1
+        var state = ByteArray(0)
+        listener.onEmulationThread {
+            engine.resetCheats()
+            state = captureState?.invoke() ?: ByteArray(0)
+            engine.start(true, delay)
+        }
+        epoch = nextEpoch
+        myChecks.clear(); peerChecks.clear()
+        send(NetMsg.Welcome(nextEpoch, delay, NetProtocol.deflate(state)))
+        canSend = true
+        if (first) {
+            active = true
+            startSender()
+            listener.onConnected(asHost = true, online = online)
+        } else listener.onResync(reason)
+    }
 
-    /** Player 2: joins a host found on the Wi-Fi (or typed in). */
-    fun join(address: String, port: Int = PORT, applyState: (ByteArray) -> Unit) {
-        thread(name = "netplay-join") {
-            try {
-                val s = Socket()
-                s.tcpNoDelay = true
-                s.connect(InetSocketAddress(address, port), 6_000)
-                socket = s
-                val input = DataInputStream(BufferedInputStream(s.getInputStream()))
-                val out = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
-                output = out
-                synchronized(writeLock) {
-                    out.writeByte(HELLO.toInt()); out.writeInt(PROTO)
-                    out.writeUTF(gameCrc); out.writeUTF(android.os.Build.MODEL ?: "Android"); out.flush()
-                }
-                when (input.readByte()) {
-                    WELCOME -> {
-                        val delay = input.readInt()
-                        val state = ByteArray(input.readInt())
-                        input.readFully(state)
-                        listener.onEmulationThread {
-                            LibretroDroid.resetCheat()
-                            applyState(state)
-                            LibretroDroid.netplayStart(false, delay)
-                        }
-                        begin(input, address, asHost = false)
-                    }
-                    REJECT -> end(input.readUTF())
-                    else -> end("رد غير متوقع من السيرفر")
-                }
-            } catch (e: Exception) {
-                if (!closed) end("تعذر الاتصال بالسيرفر: ${e.message ?: ""}")
+    private fun compare(frame: Long) {
+        val mine = myChecks[frame] ?: return
+        val theirs = peerChecks[frame] ?: return
+        myChecks.remove(frame); peerChecks.remove(frame)
+        if (!isHost) return
+        if (mine != theirs) {
+            control.execute { startEpoch(first = false, reason = "تمت إعادة المزامنة تلقائياً") }
+            return
+        }
+        // Slow internet link: give it more frames of slack (needs a fresh start to take effect).
+        if (online && rttMs > 0) {
+            val wanted = (ceil((rttMs / 2.0 + 12.0) / 16.67).toInt() + 1).coerceIn(ONLINE_DELAY, MAX_DELAY)
+            val now = System.nanoTime()
+            if (wanted > delay + 1 && now - lastDelayChange > 30_000_000_000L) {
+                lastDelayChange = now
+                delay = wanted
+                control.execute { startEpoch(first = false, reason = "تم ضبط التأخير حسب سرعة الإنترنت") }
             }
         }
     }
 
-    // ------------------------------------------------------------------ running
+    // ================================================================== sending
 
-    private fun begin(input: DataInputStream, peer: String, asHost: Boolean) {
-        active = true
-        listener.onConnected(peer, asHost)
-
-        // Sender: buttons from the engine -> network, plus a ping every second.
-        thread(name = "netplay-send") {
-            val frames = LongArray(64)
-            val masks = IntArray(64)
-            var lastPing = 0L
-            try {
-                while (active) {
-                    val n = LibretroDroid.netplayPollLocal(frames, masks)
-                    val now = System.nanoTime()
-                    val out = output ?: break
-                    if (n > 0 || now - lastPing > 1_000_000_000L) {
-                        synchronized(writeLock) {
-                            for (i in 0 until n) {
-                                out.writeByte(INPUT.toInt()); out.writeLong(frames[i]); out.writeShort(masks[i])
-                            }
-                            if (now - lastPing > 1_000_000_000L) {
-                                out.writeByte(PING.toInt()); out.writeLong(now); lastPing = now
-                            }
-                            out.flush()
-                        }
-                    } else {
-                        Thread.sleep(2)
-                    }
+    private fun startSender() = thread(name = "netplay-send") {
+        val frames = LongArray(64); val masks = IntArray(64)
+        val cFrames = LongArray(8); val cCrcs = IntArray(8)
+        val pendingFirst = ArrayList<Long>(); val pendingMasks = ArrayList<Short>()
+        var pendingSince = 0L
+        var lastPing = 0L
+        fun flush() {
+            if (pendingMasks.isEmpty()) return
+            // split into runs of consecutive frames
+            var start = 0
+            for (i in 1..pendingMasks.size) {
+                if (i == pendingMasks.size || pendingFirst[i] != pendingFirst[i - 1] + 1) {
+                    send(NetMsg.Input(epoch, pendingFirst[start], ShortArray(i - start) { pendingMasks[start + it] }))
+                    start = i
                 }
-            } catch (e: Exception) {
-                if (active && !closed) end("انقطع الاتصال باللاعب الثاني")
             }
+            pendingFirst.clear(); pendingMasks.clear()
         }
-
-        // Receiver (this thread): buttons from the other player -> engine.
         try {
-            while (active) {
-                when (input.readByte()) {
-                    INPUT -> LibretroDroid.netplayPushRemote(input.readLong(), input.readUnsignedShort())
-                    PING -> {
-                        val t = input.readLong()
-                        synchronized(writeLock) { output?.apply { writeByte(PONG.toInt()); writeLong(t); flush() } }
+            while (!closed) {
+                var worked = false
+                if (canSend) {
+                    val n = engine.pollLocal(frames, masks)
+                    for (i in 0 until n) {
+                        if (pendingMasks.isEmpty()) pendingSince = System.nanoTime()
+                        pendingFirst += frames[i]; pendingMasks += masks[i].toShort()
                     }
-                    PONG -> listener.onPing(((System.nanoTime() - input.readLong()) / 1_000_000L).toInt())
-                    BYE -> { end("اللاعب الثاني طلع من اللعب الزوجي"); return }
-                    else -> throw IOException("unknown message")
+                    val now = System.nanoTime()
+                    if (pendingMasks.isNotEmpty() &&
+                        (!online || pendingMasks.size >= ONLINE_BATCH || now - pendingSince > ONLINE_FLUSH_NS)) flush()
+                    val c = engine.pollChecks(cFrames, cCrcs)
+                    for (i in 0 until c) {
+                        myChecks[cFrames[i]] = cCrcs[i]
+                        send(NetMsg.Check(epoch, cFrames[i], cCrcs[i]))
+                        compare(cFrames[i])
+                    }
+                    worked = n > 0 || c > 0
+                } else {
+                    pendingFirst.clear(); pendingMasks.clear()
                 }
+                val now = System.nanoTime()
+                if (now - lastPing > 1_000_000_000L) { send(NetMsg.Ping(now)); lastPing = now }
+                if (!worked) Thread.sleep(2)
             }
+        } catch (_: InterruptedException) {
         } catch (e: Exception) {
-            if (active && !closed) end("انقطع الاتصال باللاعب الثاني")
+            if (!closed) end("انقطع الاتصال باللاعب الثاني")
         }
     }
 
-    // ------------------------------------------------------------------ discovery (host side)
+    // ================================================================== LAN discovery
 
     private fun advertise() = runCatching {
-        val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val ctx = context ?: return@runCatching
+        val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         multicastLock = wifi.createMulticastLock("neondrive-netplay").apply { setReferenceCounted(false); acquire() }
         val info = NsdServiceInfo().apply {
             serviceName = "NeonDrive · " + gameTitle.take(30)
@@ -244,7 +342,7 @@ class NetplaySession(
             override fun onServiceUnregistered(info: NsdServiceInfo) {}
             override fun onUnregistrationFailed(info: NsdServiceInfo, code: Int) {}
         }
-        nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
+        nsd = ctx.getSystemService(Context.NSD_SERVICE) as NsdManager
         nsd?.registerService(info, NsdManager.PROTOCOL_DNS_SD, reg)
         registration = reg
     }
@@ -256,17 +354,16 @@ class NetplaySession(
         multicastLock = null
     }
 
-    // ------------------------------------------------------------------ ending
+    // ================================================================== ending
 
-    /** Leaves two-player mode (also tells the other phone). */
+    /** Leaves two-player mode (and tells the other phone). */
     fun close() {
         if (closed) return
         closed = true
-        val wasActive = active
         active = false
-        LibretroDroid.netplayStop()
+        engine.stop()
         thread(name = "netplay-close") {
-            if (wasActive) runCatching { synchronized(writeLock) { output?.apply { writeByte(BYE.toInt()); flush() } } }
+            runCatching { send(NetMsg.Bye); Thread.sleep(150) }
             cleanup()
         }
     }
@@ -275,15 +372,16 @@ class NetplaySession(
         if (closed) return
         closed = true
         active = false
-        LibretroDroid.netplayStop()
+        engine.stop()
         cleanup()
         listener.onEnded(reason)
     }
 
     private fun cleanup() {
         unadvertise()
-        runCatching { socket?.close() }
+        runCatching { transport?.close() }
         runCatching { server?.close() }
-        socket = null; server = null; output = null
+        transport = null; server = null
+        control.shutdownNow()
     }
 }

@@ -112,6 +112,11 @@ class Settings(context: Context) {
         get() = p.getBoolean("ggLcd", false)
         set(v) = p.edit().putBoolean("ggLcd", v).apply()
 
+    /** Online-play relay address (empty = built-in). */
+    var relayUrl: String
+        get() = p.getString("relayUrl", "") ?: ""
+        set(v) = p.edit().putString("relayUrl", v.trim()).apply()
+
     var autoResume: Boolean
         get() = p.getBoolean("autoResume", true)
         set(v) = p.edit().putBoolean("autoResume", v).apply()

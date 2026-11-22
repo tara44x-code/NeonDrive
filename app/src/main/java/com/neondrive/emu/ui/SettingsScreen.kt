@@ -177,8 +177,19 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             ) { Text("تحديث من الإنترنت", color = Neon.Cyan) }
         }
 
+        Section("اللعب الأونلاين") {
+            var relay by remember { mutableStateOf(s.relayUrl) }
+            Text("سيرفر الأونلاين المدمج جاهز ومشترك ويا DragonNES. غيّره بس إذا عندك سيرفر خاص.", color = Neon.TextDim, fontSize = 11.sp)
+            OutlinedTextField(
+                relay, { relay = it; s.relayUrl = it }, Modifier.fillMaxWidth(), singleLine = true,
+                placeholder = { Text(com.neondrive.emu.BuildConfig.RELAY_URL, fontSize = 11.sp) },
+                textStyle = LocalTextStyle.current.copy(fontSize = 12.sp),
+            )
+        }
+
         Section("حول") {
             DeveloperBadge(Modifier.fillMaxWidth(), height = 64.dp)
+            Text("الإصدار ${com.neondrive.emu.BuildConfig.VERSION_NAME}", color = Neon.TextDim, fontSize = 12.sp)
         }
     }
 }

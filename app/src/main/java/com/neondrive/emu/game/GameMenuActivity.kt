@@ -84,12 +84,18 @@ class GameMenuActivity : ComponentActivity() {
         const val ACTION_NET_STOP = "net_stop"
         const val RES_NET_ADDRESS = "net_address"
         const val RES_NET_PORT = "net_port"
+        const val ACTION_NET_HOST_ONLINE = "net_host_online"
+        const val ACTION_NET_JOIN_ONLINE = "net_join_online"
+        const val ACTION_NET_SHARE = "net_share"
+        const val RES_NET_CODE = "net_code"
+        private const val EXTRA_NET_CODE = "net_room"
 
         /** [netStatus]: null when not in two-player mode, else a short status line. */
-        fun intent(context: Context, game: Game, netStatus: String? = null) =
+        fun intent(context: Context, game: Game, netStatus: String? = null, roomCode: String? = null) =
             Intent(context, GameMenuActivity::class.java)
                 .putExtra(EXTRA_GAME, game.toJson().toString())
                 .putExtra(EXTRA_NET, netStatus)
+                .putExtra(EXTRA_NET_CODE, roomCode)
     }
 
     private lateinit var game: Game
@@ -143,6 +149,7 @@ class GameMenuActivity : ComponentActivity() {
 
     private val netStatus: String? by lazy { intent.getStringExtra(EXTRA_NET) }
     private val inNetplay: Boolean get() = netStatus != null
+    private val roomCode: String? by lazy { intent.getStringExtra(EXTRA_NET_CODE) }
 
     @Composable
     private fun MainPage(onCheats: () -> Unit, onNet: () -> Unit) {
@@ -468,6 +475,13 @@ class GameMenuActivity : ComponentActivity() {
 
             if (inNetplay) {
                 Text("👥 $netStatus", color = Neon.Text, fontSize = 14.sp)
+                roomCode?.let { code ->
+                    Text("كود الغرفة", color = Neon.TextDim, fontSize = 12.sp)
+                    Text(code, style = Neon.glowText.copy(fontSize = 34.sp, letterSpacing = 6.sp))
+                    OutlinedButton(onClick = { finishWith(ACTION_NET_SHARE) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("مشاركة الكود", color = Neon.Cyan)
+                    }
+                }
                 Button(
                     onClick = { finishWith(ACTION_NET_STOP) },
                     colors = ButtonDefaults.buttonColors(containerColor = Neon.Magenta),
@@ -477,9 +491,45 @@ class GameMenuActivity : ComponentActivity() {
             }
 
             Text(
-                "الموبايلين لازم يكونون على نفس الوايفاي (أو واحد مشغّل نقطة اتصال للثاني)، ونفس اللعبة مفتوحة على الاثنين.",
+                "نفس اللعبة لازم تكون مفتوحة على الموبايلين. بالبيت: نفس الوايفاي. من مكانين مختلفين: أونلاين بكود غرفة.",
                 color = Neon.TextDim, fontSize = 12.sp,
             )
+
+            NeonPanel(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🌐 أونلاين (من أي مكان)", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+                    Text("سوّي غرفة وارسل الكود لصديقك، أو اكتب الكود اللي وصلك.", color = Neon.TextDim, fontSize = 12.sp)
+                    Button(
+                        onClick = { finishWith(ACTION_NET_HOST_ONLINE) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Neon.Cyan),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("إنشاء غرفة (إنت اللاعب 1)", color = Neon.Bg, fontWeight = FontWeight.Bold) }
+                    var code by remember { mutableStateOf("") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            code, { v -> code = v.uppercase().filter { it.isLetterOrDigit() }.take(6) },
+                            Modifier.weight(1f), singleLine = true,
+                            placeholder = { Text("كود الغرفة") },
+                            textStyle = LocalTextStyle.current.copy(letterSpacing = 3.sp, fontWeight = FontWeight.Bold),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                setResult(RESULT_OK, Intent().apply {
+                                    putExtra(RES_ACTION, ACTION_NET_JOIN_ONLINE); putExtra(RES_NET_CODE, code)
+                                    putExtra(RES_CHEATS_CHANGED, cheatsChanged); putExtra(RES_FILTER_CHANGED, filterChanged)
+                                    putExtra(RES_ASPECT_CHANGED, aspectChanged); putExtra(RES_IMAGE_CHANGED, imageChanged)
+                                })
+                                finish()
+                            },
+                            enabled = code.length == 6,
+                            colors = ButtonDefaults.buttonColors(containerColor = Neon.Magenta),
+                        ) { Text("دخول", color = Neon.Bg) }
+                    }
+                }
+            }
+
+            Text("📶 على نفس الوايفاي", color = Neon.Text, fontWeight = FontWeight.Bold)
 
             NeonPanel(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

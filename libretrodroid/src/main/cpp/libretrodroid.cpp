@@ -25,6 +25,7 @@
 #include <unordered_set>
 
 #include "libretrodroid.h"
+#include <zlib.h>
 #include "utils/libretrodroidexception.h"
 #include "log.h"
 #include "core.h"
@@ -460,6 +461,17 @@ void LibretroDroid::step() {
             core->retro_run();
             netplayApplying = false;
             netplay.frameDone();
+            // Fingerprint of the whole game state at the same frame on both phones (desync check).
+            int64_t f = netplay.currentFrame();
+            if (f % Netplay::CHECK_EVERY == 0) {
+                size_t size = core->retro_serialize_size();
+                if (size > 0) {
+                    std::vector<uint8_t> buf(size);
+                    if (core->retro_serialize(buf.data(), size)) {
+                        netplay.pushCheck(f, (uint32_t) crc32(0L, buf.data(), (uInt) size));
+                    }
+                }
+            }
         } else {
             netplay.noteStall();
         }

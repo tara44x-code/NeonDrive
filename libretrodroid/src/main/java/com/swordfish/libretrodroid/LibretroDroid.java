@@ -114,6 +114,7 @@ public class LibretroDroid {
     public static native void netplayPushRemote(long frame, int mask);
     public static native int netplayPollLocal(long[] frames, int[] masks);
     public static native void netplayStatus(long[] out);
+    public static native int netplayPollChecks(long[] frames, int[] crcs);
     public static native long readCapturedFrameI420(java.nio.ByteBuffer directBuffer, int width, int height);
     public static native float[] getForegroundBounds();
 

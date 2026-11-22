@@ -16,6 +16,8 @@ android {
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
         versionCode = 100 + run
         versionName = "0.4.$run"
+        // Online-play relay (Cloudflare Worker, shared with DragonNES). Override with the RELAY_URL repo variable.
+        buildConfigField("String", "RELAY_URL", "\"" + (System.getenv("RELAY_URL")?.takeIf { it.isNotBlank() } ?: "https://dragonnes-relay.tara44x.workers.dev") + "\"")
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -56,6 +58,7 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 
 dependencies {
@@ -79,4 +82,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-gif:2.7.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation("junit:junit:4.13.2")
 }
