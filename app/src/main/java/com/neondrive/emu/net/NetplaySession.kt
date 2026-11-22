@@ -100,6 +100,8 @@ class NetplaySession(
     private val myChecks = ConcurrentHashMap<Long, Int>()
     private val peerChecks = ConcurrentHashMap<Long, Int>()
     private val control = Executors.newSingleThreadExecutor()
+    /** Held while polling+sending, and while switching epochs: the two never interleave. */
+    private val sendLock = Any()
 
     private var server: ServerSocket? = null
     private var nsd: NsdManager? = null
@@ -194,17 +196,19 @@ class NetplaySession(
                 }
             }
             is NetMsg.Welcome -> if (!isHost) {
-                canSend = false
                 val state = NetProtocol.inflate(m.state)
-                delay = m.delay
-                listener.onEmulationThread {
-                    engine.resetCheats()
-                    applyState?.invoke(state)
-                    engine.start(false, m.delay)
+                synchronized(sendLock) {
+                    canSend = false
+                    delay = m.delay
+                    listener.onEmulationThread {
+                        engine.resetCheats()
+                        applyState?.invoke(state)
+                        engine.start(false, m.delay)   // also drops anything queued for the old epoch
+                    }
+                    epoch = m.epoch
+                    myChecks.clear(); peerChecks.clear()
+                    canSend = true
                 }
-                epoch = m.epoch
-                myChecks.clear(); peerChecks.clear()
-                canSend = true
                 if (!active) {
                     active = true
                     startSender()
@@ -233,18 +237,21 @@ class NetplaySession(
     /** Host: freeze one exact state, restart lockstep from it, send it (new epoch). */
     private fun startEpoch(first: Boolean, reason: String) {
         if (closed) return
-        canSend = false
-        val nextEpoch = epoch + 1
-        var state = ByteArray(0)
-        listener.onEmulationThread {
-            engine.resetCheats()
-            state = captureState?.invoke() ?: ByteArray(0)
-            engine.start(true, delay)
+        synchronized(sendLock) {
+            canSend = false
+            val nextEpoch = epoch + 1
+            var state = ByteArray(0)
+            listener.onEmulationThread {
+                engine.resetCheats()
+                state = captureState?.invoke() ?: ByteArray(0)
+                engine.start(true, delay)          // also drops anything queued for the old epoch
+            }
+            epoch = nextEpoch
+            myChecks.clear(); peerChecks.clear()
+            // Welcome goes out before any input of the new epoch (same ordered pipe, same lock).
+            send(NetMsg.Welcome(nextEpoch, delay, NetProtocol.deflate(state)))
+            canSend = true
         }
-        epoch = nextEpoch
-        myChecks.clear(); peerChecks.clear()
-        send(NetMsg.Welcome(nextEpoch, delay, NetProtocol.deflate(state)))
-        canSend = true
         if (first) {
             active = true
             startSender()
@@ -293,27 +300,29 @@ class NetplaySession(
             }
             pendingFirst.clear(); pendingMasks.clear()
         }
+        var pendingEpoch = -1
         try {
             while (!closed) {
                 var worked = false
-                if (canSend) {
-                    val n = engine.pollLocal(frames, masks)
-                    for (i in 0 until n) {
-                        if (pendingMasks.isEmpty()) pendingSince = System.nanoTime()
-                        pendingFirst += frames[i]; pendingMasks += masks[i].toShort()
+                synchronized(sendLock) {
+                    if (pendingEpoch != epoch) { pendingFirst.clear(); pendingMasks.clear(); pendingEpoch = epoch }
+                    if (canSend) {
+                        val n = engine.pollLocal(frames, masks)
+                        for (i in 0 until n) {
+                            if (pendingMasks.isEmpty()) pendingSince = System.nanoTime()
+                            pendingFirst += frames[i]; pendingMasks += masks[i].toShort()
+                        }
+                        val now = System.nanoTime()
+                        if (pendingMasks.isNotEmpty() &&
+                            (!online || pendingMasks.size >= ONLINE_BATCH || now - pendingSince > ONLINE_FLUSH_NS)) flush()
+                        val c = engine.pollChecks(cFrames, cCrcs)
+                        for (i in 0 until c) {
+                            myChecks[cFrames[i]] = cCrcs[i]
+                            send(NetMsg.Check(epoch, cFrames[i], cCrcs[i]))
+                        }
+                        for (i in 0 until c) compare(cFrames[i])
+                        worked = n > 0 || c > 0
                     }
-                    val now = System.nanoTime()
-                    if (pendingMasks.isNotEmpty() &&
-                        (!online || pendingMasks.size >= ONLINE_BATCH || now - pendingSince > ONLINE_FLUSH_NS)) flush()
-                    val c = engine.pollChecks(cFrames, cCrcs)
-                    for (i in 0 until c) {
-                        myChecks[cFrames[i]] = cCrcs[i]
-                        send(NetMsg.Check(epoch, cFrames[i], cCrcs[i]))
-                        compare(cFrames[i])
-                    }
-                    worked = n > 0 || c > 0
-                } else {
-                    pendingFirst.clear(); pendingMasks.clear()
                 }
                 val now = System.nanoTime()
                 if (now - lastPing > 1_000_000_000L) { send(NetMsg.Ping(now)); lastPing = now }
